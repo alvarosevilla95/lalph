@@ -25,7 +25,7 @@ describe("PrdIssue", () => {
           description: "desc",
           priority: 2,
           estimate: 3,
-          state: "in-progress",
+          state: "in-progress" as const,
           blockedBy: ["#2"],
           autoMerge: true,
         }
@@ -70,7 +70,7 @@ describe("PrdIssue", () => {
       Effect.gen(function* () {
         const result = yield* Schema.decodeEffect(PrdIssue)({
           title: "Bad state",
-          state: "invalid",
+          state: "invalid" as unknown as PrdIssue["state"],
         }).pipe(Effect.asVoid, Effect.flip)
         assert.isTrue("_tag" in result)
       }),

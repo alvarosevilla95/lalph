@@ -11,7 +11,7 @@
   "scripts": {
     "prepare": "husky && effect-language-service patch",
     "test": "vitest run",
-    "check": "concurrently \"pnpm tsgo --noEmit\" \"pnpm oxlint -c .oxlintrc.json\" \"pnpm build\" \"pnpm test\"",
+    "check": "concurrently \"pnpm tsgo --noEmit -p tsconfig.test.json\" \"pnpm oxlint -c .oxlintrc.json\" \"pnpm build\" \"pnpm test\"",
     "build": "tsdown",
     "prepublishOnly": "pnpm build"
   },
