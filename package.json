@@ -10,7 +10,8 @@
   },
   "scripts": {
     "prepare": "husky && effect-language-service patch",
-    "check": "concurrently \"pnpm tsgo --noEmit\" \"pnpm oxlint -c .oxlintrc.json\" \"pnpm build\"",
+    "test": "vitest run",
+    "check": "concurrently \"pnpm tsgo --noEmit\" \"pnpm oxlint -c .oxlintrc.json\" \"pnpm build\" \"pnpm test\"",
     "build": "tsdown",
     "prepublishOnly": "pnpm build"
   },
@@ -48,6 +49,7 @@
     "@effect/ai-openai-compat": "4.0.0-beta.36",
     "@effect/language-service": "^0.81.0",
     "@effect/platform-node": "4.0.0-beta.36",
+    "@effect/vitest": "4.0.0-beta.36",
     "@linear/sdk": "^78.0.0",
     "@octokit/plugin-rest-endpoint-methods": "^17.0.0",
     "@octokit/types": "^16.0.0",
@@ -62,6 +64,7 @@
     "prettier": "^3.8.1",
     "tsdown": "^0.21.4",
     "typescript": "^5.9.3",
+    "vitest": "^4.1.0",
     "yaml": "^2.8.2"
   },
   "lint-staged": {
