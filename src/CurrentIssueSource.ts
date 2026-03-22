@@ -11,6 +11,7 @@ import {
   SubscriptionRef,
 } from "effect"
 import { allProjects, CurrentProjectId, Setting, Settings } from "./Settings.ts"
+import { JiraIssueSource } from "./Jira.ts"
 import { LinearIssueSource } from "./Linear.ts"
 import { Prompt } from "effect/unstable/cli"
 import { GithubIssueSource } from "./Github.ts"
@@ -32,6 +33,12 @@ const issueSources: ReadonlyArray<typeof CurrentIssueSource.Service> = [
     name: "GitHub Issues",
     layer: GithubIssueSource,
     githubPrInstructions: `At the start of your PR description, include a line that closes the issue: Closes {task id}`,
+  },
+  {
+    id: "jira",
+    name: "Jira",
+    layer: JiraIssueSource,
+    githubPrInstructions: `Include the Jira issue key (e.g. PROJ-123) in the PR title or description so it links back to the Jira issue.`,
   },
 ]
 
@@ -67,8 +74,16 @@ export class CurrentIssueSource extends ServiceMap.Service<
     readonly name: string
     readonly layer: Layer.Layer<
       IssueSource,
-      Layer.Error<typeof LinearIssueSource | typeof GithubIssueSource>,
-      Layer.Services<typeof LinearIssueSource | typeof GithubIssueSource>
+      Layer.Error<
+        | typeof LinearIssueSource
+        | typeof GithubIssueSource
+        | typeof JiraIssueSource
+      >,
+      Layer.Services<
+        | typeof LinearIssueSource
+        | typeof GithubIssueSource
+        | typeof JiraIssueSource
+      >
     >
     readonly githubPrInstructions: string
   }
