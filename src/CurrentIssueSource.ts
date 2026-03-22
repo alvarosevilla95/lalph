@@ -38,7 +38,7 @@ const issueSources: ReadonlyArray<typeof CurrentIssueSource.Service> = [
     id: "jira",
     name: "Jira",
     layer: JiraIssueSource,
-    githubPrInstructions: `Include the Jira issue key (e.g. PROJ-123) in the PR title or description so it links back to the Jira issue.`,
+    githubPrInstructions: `The PR title should include the Jira issue key (e.g. PROJ-123). Include the issue key in the PR description as well.`,
   },
 ]
 
