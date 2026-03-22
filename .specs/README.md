@@ -4,3 +4,4 @@
 - `cli-agent-presets.md`: Adds CLI agent presets with label-based matching and prompts.
 - `lalph-cli-help-readme-docs.md`: Refreshes CLI help text and README with concise feature usage.
 - `lalph-ralph-mode-cleanup.md`: Refactors Ralph mode branching into named helpers across root and agents for readability.
+- `jira-issue-source.md`: Adds Jira Cloud as a third issue source with OAuth 2.0 auth, JQL filtering, ADF conversion, and full CRUD operations.
