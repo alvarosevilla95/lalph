@@ -23,7 +23,9 @@ function isAdfNode(value: unknown): value is AdfNode {
 function convertNode(node: AdfNode, listPrefix?: string): string {
   switch (node.type) {
     case "doc":
-      return convertChildren(node)
+      return (node.content ?? [])
+        .map((child) => convertNode(child))
+        .join("\n")
         .replace(/\n{3,}/g, "\n\n")
         .trim()
 
