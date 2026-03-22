@@ -6,6 +6,7 @@ import { NodeRuntime } from "@effect/platform-node"
 import { Settings } from "./Settings.ts"
 import { commandRoot } from "./commands/root.ts"
 import { commandPlan } from "./commands/plan.ts"
+import { commandGenerateTasks } from "./commands/generate-tasks.ts"
 import { commandIssue } from "./commands/issue.ts"
 import { commandEdit } from "./commands/edit.ts"
 import { commandSource } from "./commands/source.ts"
@@ -20,6 +21,7 @@ import { commandAgents } from "./commands/agents.ts"
 commandRoot.pipe(
   Command.withSubcommands([
     commandPlan,
+    commandGenerateTasks,
     commandIssue,
     commandEdit,
     commandSh,

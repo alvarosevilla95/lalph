@@ -34,6 +34,7 @@ npx -y lalph@latest
 - Configure projects and per-project concurrency: `lalph projects add`
 - Inspect and configure agent presets: `lalph agents ls`
 - Start plan mode: `lalph plan`
+- Convert an existing spec directly into tasks: `lalph generate-tasks .specs/my-spec.md`
 - Create an issue from your editor: `lalph issue`
 - Choose your issue source integration (applies to all projects): `lalph source`
 
@@ -86,6 +87,7 @@ preset to run before launching the CLI agent.
 ```bash
 lalph plan
 lalph plan --file ./my-plan.md
+lalph generate-tasks .specs/my-spec.md
 lalph plan tasks .specs/my-spec.md
 ```
 

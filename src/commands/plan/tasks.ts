@@ -39,7 +39,9 @@ export const commandPlanTasks = Command.make("tasks", {
     }, Effect.provide(CurrentIssueSource.layer)),
   ),
 )
-const generateTasks = Effect.fnUntraced(
+export const generateTasksSpecificationPath = specificationPath
+
+export const generateTasks = Effect.fnUntraced(
   function* ({
     specsDirectory,
     specificationPath,
