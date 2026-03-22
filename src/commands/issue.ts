@@ -7,6 +7,7 @@ import { Editor } from "../Editor.ts"
 import {
   createIssueFromDraft,
   issueTemplate,
+  issueTitlePlaceholder,
   parseIssueDraft,
   prepareInteractiveIssueDraftSession,
   recoverIssueDraftOnFailure,
@@ -45,7 +46,7 @@ const runStandardIssue = Effect.fnUntraced(function* () {
   const projectId = yield* CurrentProjectId
   const parsed = yield* parseIssueDraft(content.value)
 
-  if (parsed.frontMatter.title.trim() === "Issue Title") {
+  if (parsed.frontMatter.title.trim() === issueTitlePlaceholder) {
     return
   }
 
@@ -80,7 +81,15 @@ const runInteractiveIssue = Effect.fnUntraced(function* () {
   })
 
   yield* draftSession.ensureDraftExists
-  const reviewed = yield* reviewIssueDraftFileUntilValid(draftSession.draftPath)
+  const reviewed = yield* reviewIssueDraftFileUntilValid(
+    draftSession.draftPath,
+    {
+      validate: ({ frontMatter }) =>
+        frontMatter.title.trim() === issueTitlePlaceholder
+          ? "Issue draft title is still the placeholder value. Update the title before creating the issue."
+          : undefined,
+    },
+  )
   if (Option.isNone(reviewed)) {
     yield* Effect.log(
       `Interactive issue draft preserved at: ${draftSession.draftPath}`,

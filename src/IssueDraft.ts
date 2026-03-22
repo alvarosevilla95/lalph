@@ -17,6 +17,8 @@ autoMerge: false
 
 `
 
+export const issueTitlePlaceholder = "Issue Title"
+
 export const interactiveIssueDraftRelativePath = ".lalph/issue-draft.md"
 
 const FrontMatterSchema = Schema.toCodecJson(
@@ -185,7 +187,16 @@ export const reviewIssueDraft = Effect.fn("reviewIssueDraft")(
 
 export const reviewIssueDraftFileUntilValid = Effect.fn(
   "reviewIssueDraftFileUntilValid",
-)(function* (path: string) {
+)(function* (
+  path: string,
+  options?: {
+    readonly validate?: (parsed: {
+      readonly content: string
+      readonly frontMatter: typeof FrontMatterSchema.Type
+      readonly issue: PrdIssue
+    }) => string | undefined
+  },
+) {
   while (true) {
     const content = yield* reviewIssueDraft({ path })
     if (Option.isNone(content)) {
@@ -211,13 +222,17 @@ export const reviewIssueDraftFileUntilValid = Effect.fn(
       }),
     )
     if (Option.isSome(parsed)) {
-      return parsed
+      const validationMessage = options?.validate?.(parsed.value)
+      if (validationMessage === undefined) {
+        return parsed
+      }
+      yield* Effect.logError(validationMessage)
+    } else {
+      yield* Effect.logError(validationError!.message)
     }
-
-    yield* Effect.logError(validationError!.message)
     const reopen = yield* Prompt.toggle({
       message:
-        "The issue draft is malformed. Reopen it in your editor to repair it?",
+        "The issue draft is invalid. Reopen it in your editor to repair it?",
       initial: true,
     })
     if (!reopen) {
