@@ -1,4 +1,4 @@
-import { Effect, FileSystem, Layer, Path } from "effect"
+import { Data, Effect, FileSystem, Layer, Path } from "effect"
 import { Argument, Command } from "effect/unstable/cli"
 import { agentTasker } from "../../Agents/tasker.ts"
 import { Prd } from "../../Prd.ts"
@@ -58,8 +58,21 @@ export const generateTasks = Effect.fnUntraced(
     const content = yield* fs.readFileString(specificationPath)
     const relative = pathService.relative(
       pathService.resolve("."),
-      specificationPath,
+      pathService.resolve(specificationPath),
     )
+
+    if (
+      relative === "" ||
+      relative === "." ||
+      relative === ".." ||
+      relative.startsWith(`..${pathService.sep}`) ||
+      pathService.isAbsolute(relative)
+    ) {
+      return yield* new SpecificationPathError({
+        specificationPath,
+      })
+    }
+
     const worktreeSpecPath = pathService.join(worktree.directory, relative)
     yield* fs.makeDirectory(pathService.dirname(worktreeSpecPath), {
       recursive: true,
@@ -79,3 +92,12 @@ export const generateTasks = Effect.fnUntraced(
     Prd.layerProvided.pipe(Layer.provideMerge(layerProjectIdPrompt)),
   ]),
 )
+
+class SpecificationPathError extends Data.TaggedError(
+  "SpecificationPathError",
+)<{
+  readonly specificationPath: string
+}> {
+  readonly message =
+    "Specification path must be inside the current repository so it can be copied into the worktree."
+}
