@@ -78,7 +78,24 @@ After making any changes, commit and push them to the same pull request.
 - **DO NOT** commit any of the files in the \`.lalph\` directory.
 - You have full permission to push branches, create PRs or create git commits.`,
 
-    postWork: () => Effect.void,
+    postWork: Effect.fnUntraced(function* (options) {
+      const projectId = yield* CurrentProjectId
+      const source = yield* IssueSource
+
+      const prState = (yield* options.worktree.viewPrState()).pipe(
+        Option.filter((pr) => pr.state === "OPEN"),
+      )
+      if (Option.isNone(prState)) return
+
+      if (options.targetBranch) {
+        yield* options.worktree.exec`gh pr edit --base ${options.targetBranch}`
+      }
+
+      yield* source.syncPullRequestMetadata({
+        projectId,
+        prNumber: prState.value.number,
+      })
+    }),
     autoMerge: Effect.fnUntraced(function* (options) {
       const prd = yield* Prd
       const source = yield* IssueSource

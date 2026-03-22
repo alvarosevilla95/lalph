@@ -6,6 +6,7 @@ import {
   Data,
   DateTime,
   Effect,
+  Exit,
   Layer,
   Option,
   pipe,
@@ -201,7 +202,13 @@ export const GithubIssueSource = Layer.effect(
           const labelFilter = yield* getOrSelectLabel
           const projectFilter = yield* getOrSelectProjectFilter
           const autoMergeLabelName = yield* getOrSelectAutoMergeLabel
-          return { labelFilter, projectFilter, autoMergeLabelName } as const
+          const pullRequestLabelName = yield* getOrSelectPullRequestLabel
+          return {
+            labelFilter,
+            projectFilter,
+            autoMergeLabelName,
+            pullRequestLabelName,
+          } as const
         },
         Effect.orDie,
         (effect, projectId) =>
@@ -444,6 +451,49 @@ export const GithubIssueSource = Layer.effect(
 
     const createIssue = github.wrap((rest) => rest.issues.create)
     const updateIssue = github.wrap((rest) => rest.issues.update)
+    const addLabelsToIssue = github.wrap((rest) => rest.issues.addLabels)
+
+    const ensureLabelExists = Effect.fnUntraced(function* (
+      labelName: string,
+    ): Effect.fn.Return<void, GithubError> {
+      const existing = yield* github
+        .request((rest) =>
+          rest.issues.getLabel({
+            owner: cli.owner,
+            repo: cli.repo,
+            name: labelName,
+          }),
+        )
+        .pipe(Effect.exit)
+
+      if (Exit.isFailure(existing)) {
+        const error = Exit.findErrorOption(existing)
+        if (Option.isNone(error) || !hasHttpStatus(error.value.cause, 404)) {
+          return yield* Effect.failCause(existing.cause)
+        }
+      } else {
+        return
+      }
+
+      const created = yield* github
+        .request((rest) =>
+          rest.issues.createLabel({
+            owner: cli.owner,
+            repo: cli.repo,
+            name: labelName,
+            color: defaultPullRequestLabelMetadata.color,
+            description: defaultPullRequestLabelMetadata.description,
+          }),
+        )
+        .pipe(Effect.exit)
+
+      if (Exit.isFailure(created)) {
+        const error = Exit.findErrorOption(created)
+        if (Option.isNone(error) || !hasHttpStatus(error.value.cause, 422)) {
+          return yield* Effect.failCause(created.cause)
+        }
+      }
+    })
 
     const addBlockedByDependency = Effect.fnUntraced(function* (options: {
       readonly issueNumber: number
@@ -681,18 +731,41 @@ export const GithubIssueSource = Layer.effect(
         },
         Effect.mapError((cause) => new IssueSourceError({ cause })),
       ),
+      syncPullRequestMetadata: Effect.fnUntraced(
+        function* (options) {
+          const { pullRequestLabelName } = yield* Cache.get(
+            projectSettings,
+            options.projectId,
+          )
+          if (Option.isNone(pullRequestLabelName)) return
+
+          yield* ensureLabelExists(pullRequestLabelName.value)
+          yield* addLabelsToIssue({
+            owner: cli.owner,
+            repo: cli.repo,
+            issue_number: options.prNumber,
+            labels: [pullRequestLabelName.value],
+          })
+        },
+        Effect.mapError((cause) => new IssueSourceError({ cause })),
+      ),
       reset: Effect.gen(function* () {
         const projectId = yield* CurrentProjectId
         yield* Settings.setProject(selectedProjectFilter, Option.none())
         yield* Settings.setProject(labelFilter, Option.none())
         yield* Settings.setProject(autoMergeLabel, Option.none())
+        yield* Settings.setProject(pullRequestLabel, Option.none())
         yield* Cache.invalidate(projectSettings, projectId)
       }),
       settings: (projectId) =>
         Effect.asVoid(Cache.get(projectSettings, projectId)),
       info: Effect.fnUntraced(function* (projectId) {
-        const { labelFilter, projectFilter, autoMergeLabelName } =
-          yield* Cache.get(projectSettings, projectId)
+        const {
+          labelFilter,
+          projectFilter,
+          autoMergeLabelName,
+          pullRequestLabelName,
+        } = yield* Cache.get(projectSettings, projectId)
         console.log(
           `  GitHub project: ${Option.match(projectFilter, {
             onNone: () => "None",
@@ -707,6 +780,12 @@ export const GithubIssueSource = Layer.effect(
         )
         console.log(
           `  Auto-merge label: ${Option.match(autoMergeLabelName, {
+            onNone: () => "Disabled",
+            onSome: (value) => value,
+          })}`,
+        )
+        console.log(
+          `  Pull request label: ${Option.match(pullRequestLabelName, {
             onNone: () => "Disabled",
             onSome: (value) => value,
           })}`,
@@ -831,6 +910,36 @@ const getOrSelectAutoMergeLabel = Effect.gen(function* () {
     return label.value
   }
   return yield* autoMergeLabelSelect
+})
+
+// == pull request label
+
+const defaultPullRequestLabelMetadata = {
+  color: "0e8a16",
+  description: "Applied to pull requests created by lalph",
+} as const
+
+const pullRequestLabel = new ProjectSetting(
+  "github.pullRequestLabel",
+  Schema.Option(Schema.String),
+)
+const pullRequestLabelSelect = Effect.gen(function* () {
+  const label = yield* Prompt.text({
+    message:
+      "What label do you want to add to pull requests created by lalph? (leave empty for none)",
+  })
+  const labelOption = Option.some(label.trim()).pipe(
+    Option.filter(String.isNonEmpty),
+  )
+  yield* Settings.setProject(pullRequestLabel, Option.some(labelOption))
+  return labelOption
+})
+const getOrSelectPullRequestLabel = Effect.gen(function* () {
+  const label = yield* Settings.getProject(pullRequestLabel)
+  if (Option.isSome(label)) {
+    return label.value
+  }
+  return yield* pullRequestLabelSelect
 })
 
 // == preset metadata
@@ -980,6 +1089,12 @@ const requestCacheKey = (options: {
   const accept = typeof acceptHeader === "string" ? acceptHeader : ""
   return `${method}:${url}:${accept}`
 }
+
+const hasHttpStatus = (cause: unknown, status: number) =>
+  typeof cause === "object" &&
+  cause !== null &&
+  "status" in cause &&
+  cause.status === status
 
 const etagHeaderValue = (
   headers: GithubResponseHeaders,

@@ -60,6 +60,11 @@ export class IssueSource extends ServiceMap.Service<
       issueId: string,
     ) => Effect.Effect<void, IssueSourceError>
 
+    readonly syncPullRequestMetadata: (options: {
+      readonly projectId: ProjectId
+      readonly prNumber: number
+    }) => Effect.Effect<void, IssueSourceError>
+
     readonly reset: Effect.Effect<
       void,
       IssueSourceError,
