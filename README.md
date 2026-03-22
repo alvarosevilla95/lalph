@@ -35,6 +35,7 @@ npx -y lalph@latest
 - Inspect and configure agent presets: `lalph agents ls`
 - Start plan mode: `lalph plan`
 - Create an issue from your editor: `lalph issue`
+- Interview with an agent before creating an issue: `lalph issue --interactive`
 - Choose your issue source integration (applies to all projects): `lalph source`
 
 It is recommended to add `.lalph/` to your `.gitignore` to avoid committing your
@@ -94,6 +95,15 @@ lalph plan tasks .specs/my-spec.md
 `lalph issue` opens a new-issue template in your editor. When you save and close
 the file, the issue is created in the current issue source.
 
+`lalph issue --interactive` prompts for a high-level request and an agent
+preset, runs an interactive terminal interview, writes the generated draft to
+`.lalph/issue-draft.md`, and then opens that draft in your editor for required
+final review before creating the issue.
+
+Interactive issue interviews currently require a preset whose CLI agent supports
+interactive terminal sessions. Built-in support is implemented for `opencode`,
+`claude`, and `codex`; `clanka` and `amp` fail fast with an explicit error.
+
 Anything below the front matter is used as the issue description.
 
 Front matter fields:
@@ -107,6 +117,8 @@ Front matter fields:
 ```bash
 lalph issue
 lalph i
+lalph issue --interactive
+lalph i --interactive
 ```
 
 ## Development
