@@ -402,7 +402,7 @@ export const JiraIssueSource = Layer.effect(
     const projectSettings = yield* Cache.make({
       lookup: Effect.fnUntraced(
         function* (_projectId: ProjectId) {
-          const cloudId = yield* getOrSelectCloudId
+          const { cloudId, siteUrl } = yield* getOrSelectCloudId
           jira.setCloudId(cloudId)
           const projectKey = yield* getOrSelectProjectKey
           const issueTypeId = yield* getOrSelectIssueType(projectKey)
@@ -414,6 +414,7 @@ export const JiraIssueSource = Layer.effect(
             .pipe(Effect.mapError((cause) => new IssueSourceError({ cause })))
           return {
             cloudId,
+            siteUrl,
             projectKey,
             issueTypeId,
             estimateFieldId,
@@ -574,15 +575,9 @@ export const JiraIssueSource = Layer.effect(
             )
           }
 
-          const browseUrl =
-            `https://api.atlassian.com/ex/jira/${settings.cloudId}/rest/api/3/issue/${created.key}`.replace(
-              /\/rest\/api\/3\/issue\//,
-              "/browse/",
-            )
-
           return {
             id: created.key,
-            url: browseUrl,
+            url: `${settings.siteUrl}/browse/${created.key}`,
           }
         },
         Effect.mapError((cause) => new IssueSourceError({ cause })),
@@ -591,6 +586,15 @@ export const JiraIssueSource = Layer.effect(
         function* (options) {
           const settings = yield* Cache.get(projectSettings, options.projectId)
           jira.setCloudId(settings.cloudId)
+
+          // Fetch current issue once if needed for labels or blockedBy diff
+          const needsCurrentIssue =
+            (options.autoMerge !== undefined &&
+              Option.isSome(settings.autoMergeLabel)) ||
+            options.blockedBy !== undefined
+          const currentIssue = needsCurrentIssue
+            ? yield* jira.getIssue(options.issueId)
+            : undefined
 
           const fields: Record<string, unknown> = {}
           if (options.title) {
@@ -603,20 +607,18 @@ export const JiraIssueSource = Layer.effect(
           // Handle auto-merge label
           if (
             options.autoMerge !== undefined &&
-            Option.isSome(settings.autoMergeLabel)
+            Option.isSome(settings.autoMergeLabel) &&
+            currentIssue
           ) {
             const autoMergeLabelName = settings.autoMergeLabel.value
-            const currentIssue = yield* jira.getIssue(options.issueId)
             const currentLabels = currentIssue.fields.labels.slice()
             const hasLabel = currentLabels.includes(autoMergeLabelName)
             if (options.autoMerge && !hasLabel) {
-              fields.labels = [...currentLabels, autoMergeLabelName].map(
-                (name) => ({ name }),
-              )
+              fields.labels = [...currentLabels, autoMergeLabelName]
             } else if (!options.autoMerge && hasLabel) {
-              fields.labels = currentLabels
-                .filter((l: string) => l !== autoMergeLabelName)
-                .map((name: string) => ({ name }))
+              fields.labels = currentLabels.filter(
+                (l: string) => l !== autoMergeLabelName,
+              )
             }
           }
 
@@ -643,8 +645,7 @@ export const JiraIssueSource = Layer.effect(
           }
 
           // Handle blockedBy diff
-          if (options.blockedBy) {
-            const currentIssue = yield* jira.getIssue(options.issueId)
+          if (options.blockedBy && currentIssue) {
             const currentBlockedBy = extractBlockedBy(
               currentIssue.fields.issuelinks,
             )
@@ -746,7 +747,7 @@ export const JiraIssueSource = Layer.effect(
       info: Effect.fnUntraced(
         function* (projectId) {
           const settings = yield* Cache.get(projectSettings, projectId)
-          console.log(`  Jira cloud ID: ${settings.cloudId}`)
+          console.log(`  Jira site: ${settings.siteUrl}`)
           console.log(`  Project: ${settings.projectKey}`)
           console.log(`  Issue type ID: ${settings.issueTypeId}`)
           console.log(
@@ -802,7 +803,7 @@ const PresetMetadata = Schema.Struct({
 
 const selectedCloudId = new ProjectSetting(
   "jira.selectedCloudId",
-  Schema.String,
+  Schema.Struct({ cloudId: Schema.String, siteUrl: Schema.String }),
 )
 const selectedProjectKey = new ProjectSetting(
   "jira.selectedProjectKey",
@@ -828,16 +829,17 @@ const selectCloudId = Effect.gen(function* () {
   const jira = yield* Jira
   const resources = yield* jira.getAccessibleResources()
   if (resources.length === 1) {
-    const cloudId = resources[0]!.id
-    yield* Settings.setProject(selectedCloudId, Option.some(cloudId))
-    console.log(`  Auto-selected Jira site: ${resources[0]!.name}`)
-    return cloudId
+    const resource = resources[0]!
+    const value = { cloudId: resource.id, siteUrl: resource.url }
+    yield* Settings.setProject(selectedCloudId, Option.some(value))
+    console.log(`  Auto-selected Jira site: ${resource.name}`)
+    return value
   }
   const selected = yield* Prompt.autoComplete({
     message: "Select a Jira Cloud site",
     choices: resources.map((r) => ({
       title: `${r.name} (${r.url})`,
-      value: r.id,
+      value: { cloudId: r.id, siteUrl: r.url },
     })),
   })
   yield* Settings.setProject(selectedCloudId, Option.some(selected))
