@@ -103,6 +103,37 @@ class Jira extends ServiceMap.Service<Jira>()("lalph/Jira", {
         Effect.scoped,
       ) as Effect.Effect<A, JiraError>
 
+    const requestVoid = (
+      method: "POST" | "PUT" | "DELETE",
+      path: string,
+      body?: unknown,
+    ): Effect.Effect<void, JiraError> =>
+      authedClient().pipe(
+        Effect.flatMap((client) => {
+          const req =
+            method === "DELETE"
+              ? client.del(path)
+              : method === "POST"
+                ? HttpClientRequest.post(path).pipe(
+                    body !== undefined
+                      ? HttpClientRequest.bodyJsonUnsafe(body)
+                      : (_) => _,
+                    client.execute,
+                  )
+                : HttpClientRequest.put(path).pipe(
+                    body !== undefined
+                      ? HttpClientRequest.bodyJsonUnsafe(body)
+                      : (_) => _,
+                    client.execute,
+                  )
+          return req.pipe(
+            Effect.asVoid,
+            Effect.mapError((cause) => new JiraError({ cause })),
+          )
+        }),
+        Effect.scoped,
+      )
+
     const searchJql = (
       jql: string,
       fields?: ReadonlyArray<string>,
@@ -138,10 +169,10 @@ class Jira extends ServiceMap.Service<Jira>()("lalph/Jira", {
     const updateIssue = (
       issueIdOrKey: string,
       fields: Record<string, unknown>,
-    ) => request<void>("PUT", `/issue/${issueIdOrKey}`, { fields })
+    ) => requestVoid("PUT", `/issue/${issueIdOrKey}`, { fields })
 
     const transitionIssue = (issueIdOrKey: string, transitionId: string) =>
-      request<void>("POST", `/issue/${issueIdOrKey}/transitions`, {
+      requestVoid("POST", `/issue/${issueIdOrKey}/transitions`, {
         transition: { id: transitionId },
       })
 
@@ -170,14 +201,14 @@ class Jira extends ServiceMap.Service<Jira>()("lalph/Jira", {
       outwardIssueKey: string,
       linkTypeName: string,
     ) =>
-      request<void>("POST", "/issueLink", {
+      requestVoid("POST", "/issueLink", {
         type: { name: linkTypeName },
         inwardIssue: { key: inwardIssueKey },
         outwardIssue: { key: outwardIssueKey },
       })
 
     const deleteIssueLink = (linkId: string) =>
-      request<void>("DELETE", `/issueLink/${linkId}`)
+      requestVoid("DELETE", `/issueLink/${linkId}`)
 
     const setCloudId = (id: string) => {
       cloudId = id
@@ -385,9 +416,11 @@ const extractBlockedBy = (
   issuelinks: JiraIssue["fields"]["issuelinks"],
 ): ReadonlyArray<string> =>
   issuelinks.flatMap((link) => {
+    // When outwardIssue is present, the current issue is the inward issue
+    // ("is blocked by" the outward issue)
     const inward = link.type.inward.toLowerCase()
-    if (inward.includes("is blocked by") && link.inwardIssue) {
-      return [link.inwardIssue.key]
+    if (inward.includes("is blocked by") && link.outwardIssue) {
+      return [link.outwardIssue.key]
     }
     return []
   })
@@ -492,7 +525,13 @@ export const JiraIssueSource = Layer.effect(
           const estimate = settings.estimateFieldId.pipe(
             Option.flatMap((fieldId) => {
               const val = issue.fields[fieldId]
-              if (typeof val === "number") return Option.some(val)
+              if (typeof val === "number") {
+                // Convert seconds to hours for time-based estimate fields
+                if (fieldId === "timeoriginalestimate") {
+                  return Option.some(Math.round(val / 3600))
+                }
+                return Option.some(val)
+              }
               return Option.none()
             }),
             Option.getOrElse(() => null),
@@ -558,7 +597,11 @@ export const JiraIssueSource = Layer.effect(
             issue.estimate !== null
           ) {
             const estimateFieldId = settings.estimateFieldId.value
-            fields[estimateFieldId] = issue.estimate
+            // Convert hours back to seconds for time-based estimate fields
+            fields[estimateFieldId] =
+              estimateFieldId === "timeoriginalestimate"
+                ? issue.estimate * 3600
+                : issue.estimate
           }
 
           const created = yield* jira.createIssue(fields)
@@ -660,8 +703,8 @@ export const JiraIssueSource = Layer.effect(
               const inward = link.type.inward.toLowerCase()
               return (
                 inward.includes("is blocked by") &&
-                link.inwardIssue &&
-                !desiredSet.has(link.inwardIssue.key)
+                link.outwardIssue &&
+                !desiredSet.has(link.outwardIssue.key)
               )
             })
 
