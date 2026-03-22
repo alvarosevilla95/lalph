@@ -47,6 +47,9 @@ export const agentChooser = Effect.fnUntraced(function* (options: {
     )
     const prdTask = yield* prd.findById(result.taskId)
     if (!prdTask) return yield* new ChosenTaskNotFound()
+    if (prdTask.state !== "todo" || prdTask.blockedBy.length > 0) {
+      return yield* new ChosenTaskNotFound()
+    }
     return {
       id: result.taskId,
       githubPrNumber: result.githubPrNumber ?? null,
@@ -86,8 +89,11 @@ export const agentChooser = Effect.fnUntraced(function* (options: {
     Effect.flatMap(
       Effect.fnUntraced(function* (task) {
         const prdTask = yield* prd.findById(task.id)
-        if (prdTask) return { ...task, prd: prdTask }
-        return yield* new ChosenTaskNotFound()
+        if (!prdTask) return yield* new ChosenTaskNotFound()
+        if (prdTask.state !== "todo" || prdTask.blockedBy.length > 0) {
+          return yield* new ChosenTaskNotFound()
+        }
+        return { ...task, prd: prdTask }
       }),
     ),
   )

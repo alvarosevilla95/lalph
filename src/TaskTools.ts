@@ -92,6 +92,8 @@ export class TaskChooseTools extends Toolkit.make(
       taskId: Schema.String,
       githubPrNumber: Schema.optional(Schema.Number),
     }),
+    success: Schema.optional(Schema.String),
+    dependencies: [CurrentProjectId],
   }),
   Tool.make("listEligibleTasks", {
     description:
@@ -130,9 +132,17 @@ export const TaskToolsHandlers = TaskToolsWithChoose.toLayer(
         yield* Effect.log(`Calling "chooseTask"`).pipe(
           Effect.annotateLogs(options),
         )
+        const projectId = yield* CurrentProjectId
+        const task = yield* source.findById(projectId, options.taskId)
+        if (!task || task.state !== "todo" || task.blockedBy.length > 0) {
+          yield* Effect.logWarning(
+            `Task ${options.taskId} is not eligible: ${!task ? "not found" : task.state !== "todo" ? `state is "${task.state}"` : "has blockers"}`,
+          )
+          return "Error: the chosen task is not eligible. It must be in 'todo' state with no blockers. Please choose a different task."
+        }
         const deferred = yield* ChosenTaskDeferred
         yield* Deferred.succeed(deferred, options)
-      }),
+      }, Effect.orDie),
       createTask: Effect.fn("TaskTools.createTask")(function* (options) {
         yield* Effect.log(`Calling "createTask"`)
         const projectId = yield* CurrentProjectId
