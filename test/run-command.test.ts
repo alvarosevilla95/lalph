@@ -6,6 +6,11 @@ import { after, describe, it } from "node:test"
 import { Effect, Option } from "effect"
 import { Command } from "effect/unstable/cli"
 import { appCommand } from "../src/app.ts"
+import {
+  FeatureFinalIntegration,
+  FeatureFinalIntegrationPrClient,
+} from "../src/FeatureFinalIntegration.ts"
+import { FeatureStatus } from "../src/FeatureStatus.ts"
 import { FeatureStorageRoot, FeatureStore } from "../src/FeatureStore.ts"
 import { RunService } from "../src/RunService.ts"
 import {
@@ -61,6 +66,33 @@ const seedFeatures = (directory: string, features: ReadonlyArray<Feature>) =>
       Effect.provide(FeatureStore.layerAt(directory)),
     ),
   )
+
+const loadFeature = (directory: string, name: string) =>
+  Effect.runPromise(
+    FeatureStore.load(FeatureName.makeUnsafe(name)).pipe(
+      Effect.provide(FeatureStore.layerAt(directory)),
+    ),
+  )
+
+const featureStatusLayer = (statuses: Record<string, string>) =>
+  FeatureStatus.layerTest({
+    resolve: (feature) =>
+      Effect.succeed(
+        (statuses[String(feature.name)] ?? "active") as
+          | "draft"
+          | "active"
+          | "paused"
+          | "blocked"
+          | "ready"
+          | "integrating"
+          | "complete"
+          | "cancelled",
+      ),
+  })
+
+const noopFeatureFinalIntegrationLayer = FeatureFinalIntegration.layerTest({
+  reconcile: (feature) => Effect.succeed(feature),
+})
 
 const runApp = (
   directory: string,
@@ -176,6 +208,7 @@ describe("run commands", () => {
       }).pipe(
         Effect.provide(PlatformServices),
         Effect.provide(FeatureStorageRoot.layerAt(directory)),
+        Effect.provide(noopFeatureFinalIntegrationLayer),
       ),
     )
 
@@ -212,6 +245,7 @@ describe("run commands", () => {
       }).pipe(
         Effect.provide(PlatformServices),
         Effect.provide(FeatureStorageRoot.layerAt(directory)),
+        Effect.provide(noopFeatureFinalIntegrationLayer),
       ),
     )
 
@@ -239,6 +273,7 @@ describe("run commands", () => {
       }).pipe(
         Effect.provide(PlatformServices),
         Effect.provide(FeatureStorageRoot.layerAt(directory)),
+        Effect.provide(noopFeatureFinalIntegrationLayer),
       ),
     )
 
@@ -279,12 +314,158 @@ describe("run commands", () => {
       }).pipe(
         Effect.provide(PlatformServices),
         Effect.provide(FeatureStorageRoot.layerAt(directory)),
+        Effect.provide(noopFeatureFinalIntegrationLayer),
       ),
     )
 
     assert.deepEqual(calls, [
       `${path.join(directory, ".specs/nested/feature-spec-path.md")}:feature/spec-path`,
     ])
+  })
+
+  it("creates and persists the final integration PR when a PR-mode feature becomes ready", async () => {
+    const directory = await makeTempDirectory()
+    const feature = new Feature({
+      ...makeFeature("feature-pr-ready"),
+      parentIssueSourceId: "LIN-101",
+    })
+    const clientCalls: Array<string> = []
+
+    await seedFeatures(directory, [feature])
+
+    await Effect.runPromise(
+      executeRunFeatureWith(
+        () => Effect.void,
+        () => Effect.die("unexpected run feature ralph"),
+      )({
+        feature,
+        iterations: 1,
+        maxIterationMinutes: 30,
+        maxContext: 1200,
+        stallMinutes: 5,
+        specsDirectory: ".specs",
+      }).pipe(
+        Effect.provide(PlatformServices),
+        Effect.provide(FeatureStorageRoot.layerAt(directory)),
+        Effect.provide(FeatureStore.layerAt(directory)),
+        Effect.provide(featureStatusLayer({ "feature-pr-ready": "ready" })),
+        Effect.provide(
+          FeatureFinalIntegrationPrClient.layerTest({
+            listByBranches: () => Effect.succeed([]),
+            reopen: () => Effect.die("unexpected reopen"),
+            create: () =>
+              Effect.sync(() => {
+                clientCalls.push("create")
+                return 42
+              }),
+          }),
+        ),
+        Effect.provide(FeatureFinalIntegration.layer),
+      ),
+    )
+
+    const persisted = await loadFeature(directory, "feature-pr-ready")
+    assert.ok(Option.isSome(persisted))
+    assert.equal(persisted.value.finalIntegrationPrId, "github:42")
+    assert.deepEqual(clientCalls, ["create"])
+  })
+
+  it("reopens and persists the final integration PR when a Ralph-mode feature becomes ready", async () => {
+    const directory = await makeTempDirectory()
+    const feature = new Feature({
+      ...makeFeature("feature-ralph-ready"),
+      executionMode: "ralph",
+      parentIssueSourceId: undefined,
+      featureBranch: "feature/ralph-ready",
+    })
+    const clientCalls: Array<string> = []
+
+    await seedFeatures(directory, [feature])
+
+    await Effect.runPromise(
+      executeRunFeatureWith(
+        () => Effect.die("unexpected run feature pr"),
+        () => Effect.void,
+      )({
+        feature,
+        iterations: 1,
+        maxIterationMinutes: 30,
+        maxContext: 1200,
+        stallMinutes: 5,
+        specsDirectory: ".specs",
+      }).pipe(
+        Effect.provide(PlatformServices),
+        Effect.provide(FeatureStorageRoot.layerAt(directory)),
+        Effect.provide(FeatureStore.layerAt(directory)),
+        Effect.provide(featureStatusLayer({ "feature-ralph-ready": "ready" })),
+        Effect.provide(
+          FeatureFinalIntegrationPrClient.layerTest({
+            listByBranches: () =>
+              Effect.succeed([
+                {
+                  number: 77,
+                  state: "CLOSED",
+                },
+              ]),
+            reopen: (prNumber) =>
+              Effect.sync(() => {
+                clientCalls.push(`reopen:${prNumber}`)
+              }),
+            create: () => Effect.die("unexpected create"),
+          }),
+        ),
+        Effect.provide(FeatureFinalIntegration.layer),
+      ),
+    )
+
+    const persisted = await loadFeature(directory, "feature-ralph-ready")
+    assert.ok(Option.isSome(persisted))
+    assert.equal(persisted.value.finalIntegrationPrId, "github:77")
+    assert.deepEqual(clientCalls, ["reopen:77"])
+  })
+
+  it("does not create a duplicate final integration PR when the feature is already integrating", async () => {
+    const directory = await makeTempDirectory()
+    const feature = new Feature({
+      ...makeFeature("feature-integrating"),
+      parentIssueSourceId: "LIN-101",
+      finalIntegrationPrId: "github:55",
+    })
+
+    await seedFeatures(directory, [feature])
+
+    await Effect.runPromise(
+      executeRunFeatureWith(
+        () => Effect.void,
+        () => Effect.die("unexpected run feature ralph"),
+      )({
+        feature,
+        iterations: 1,
+        maxIterationMinutes: 30,
+        maxContext: 1200,
+        stallMinutes: 5,
+        specsDirectory: ".specs",
+      }).pipe(
+        Effect.provide(PlatformServices),
+        Effect.provide(FeatureStorageRoot.layerAt(directory)),
+        Effect.provide(FeatureStore.layerAt(directory)),
+        Effect.provide(
+          featureStatusLayer({ "feature-integrating": "integrating" }),
+        ),
+        Effect.provide(
+          FeatureFinalIntegrationPrClient.layerTest({
+            listByBranches: () => Effect.die("unexpected list"),
+            reopen: () => Effect.die("unexpected reopen"),
+            create: () => Effect.die("unexpected create"),
+          }),
+        ),
+        Effect.provide(FeatureFinalIntegration.layer),
+      ),
+    )
+
+    const persisted = await loadFeature(directory, "feature-integrating")
+    assert.ok(Option.isSome(persisted))
+    assert.equal(persisted.value.finalIntegrationPrId, "github:55")
   })
 
   it("runs enabled projects together with active stored features in the global loop", async () => {
@@ -328,6 +509,53 @@ describe("run commands", () => {
       "feature:feature-alpha",
       "feature:feature-zeta",
     ])
+  })
+
+  it("reuses final integration reconciliation from run all for ready active features", async () => {
+    const directory = await makeTempDirectory()
+    const feature = new Feature({
+      ...makeFeature("feature-global-ready"),
+      parentIssueSourceId: "LIN-101",
+    })
+
+    await seedFeatures(directory, [feature])
+
+    await Effect.runPromise(
+      Effect.scoped(
+        executeRunAllWith(
+          () => Effect.succeed([]),
+          FeatureStore.list(),
+          () => Effect.die("unexpected project run"),
+          executeRunFeatureWith(
+            () => Effect.void,
+            () => Effect.die("unexpected run feature ralph"),
+          ),
+        )({
+          iterations: 1,
+          maxIterationMinutes: 30,
+          maxContext: 1200,
+          stallMinutes: 5,
+          specsDirectory: ".specs",
+        }),
+      ).pipe(
+        Effect.provide(PlatformServices),
+        Effect.provide(FeatureStorageRoot.layerAt(directory)),
+        Effect.provide(FeatureStore.layerAt(directory)),
+        Effect.provide(featureStatusLayer({ "feature-global-ready": "ready" })),
+        Effect.provide(
+          FeatureFinalIntegrationPrClient.layerTest({
+            listByBranches: () => Effect.succeed([]),
+            reopen: () => Effect.die("unexpected reopen"),
+            create: () => Effect.succeed(88),
+          }),
+        ),
+        Effect.provide(FeatureFinalIntegration.layer),
+      ),
+    )
+
+    const persisted = await loadFeature(directory, "feature-global-ready")
+    assert.ok(Option.isSome(persisted))
+    assert.equal(persisted.value.finalIntegrationPrId, "github:88")
   })
 
   it("dispatches run all to the global entrypoint", async () => {

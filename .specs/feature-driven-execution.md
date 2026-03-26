@@ -487,6 +487,12 @@ state and supports both PR-mode and Ralph-mode features uniformly.
   GitHub CLI PR state lookup. Open final PRs display as `integrating`, merged
   final PRs display as `complete`, and closed-unmerged PRs fall back to the
   execution-source-derived state.
+- Implementation note: ready-feature reconciliation now searches GitHub for
+  existing PRs matching the feature/base branch pair before creating anything.
+  This lets `lalph run feature <name>` and `lalph run all` reuse open PRs,
+  persist missing `finalIntegrationPrId` values, reopen the latest closed PR,
+  and avoid duplicate final integration PR creation when metadata is stale or
+  missing.
 - Implementation note: PR-mode feature display state is now derived from child
   issue-source tasks under `parentIssueSourceId`: all-done child work resolves
   to `ready`, runnable or in-flight work resolves to `active`, and incomplete
@@ -538,9 +544,9 @@ state and supports both PR-mode and Ralph-mode features uniformly.
    - `lalph run all` now includes active stored features in addition to enabled
      project execution, while `lalph run issues` remains limited to top-level
      parentless tasks.
-5. [ ] Add feature status derivation and integration PR automation.
+5. [x] Add feature status derivation and integration PR automation.
    - [x] Compute derived display status from local + external state.
-   - [ ] Automatically create/open final integration PRs when features become ready.
+   - [x] Automatically create/open final integration PRs when features become ready.
    - `src/FeatureStatus.ts` now resolves derived display state for
      `lalph features ls` / `show`, reconciling persisted lifecycle metadata
      with final PR state plus PR-mode child-task state or Ralph spec task
@@ -549,6 +555,14 @@ state and supports both PR-mode and Ralph-mode features uniformly.
      `features show <name>` report the derived display status, while resolver
      tests cover `blocked`, `ready`, `integrating`, merged-PR `complete`, and
      Ralph ready state.
+   - `src/FeatureFinalIntegration.ts` now reconciles each feature after a run
+     loop finishes, creates or reopens the final integration PR when the
+     feature becomes `ready`, persists the resulting `finalIntegrationPrId`,
+     and reuses the same reconciliation path from both `lalph run feature` and
+     `lalph run all`.
+   - Command-level coverage now verifies PR-mode creation, Ralph-mode reopen,
+     duplicate avoidance for already-integrating features, and persistence of
+     stored final PR ids through both named-feature and global run paths.
 6. [ ] Resolve deferred UX follow-ups in later tasks.
    - Add manual finalize/pause/resume controls if needed.
    - Finalize `run all` scheduling policy.

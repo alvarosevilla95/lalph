@@ -67,6 +67,7 @@ import { CurrentTask } from "../domain/CurrentTask.ts"
 import { RunService } from "../RunService.ts"
 import type { RunFeatureOptions } from "../RunService.ts"
 import { FeatureStorageRoot, FeatureStore } from "../FeatureStore.ts"
+import { FeatureFinalIntegration } from "../FeatureFinalIntegration.ts"
 import {
   scopeIssueSourceToParentIssueSourceId,
   scopeIssueSourceToTopLevelIssues,
@@ -885,20 +886,16 @@ export const executeRunFeatureWith = <E, R>(
     },
   ) => Effect.Effect<void, E, R>,
 ) =>
-  Effect.fnUntraced(function* (
-    options: RunFeatureOptions,
-  ): Effect.fn.Return<
-    void,
-    E | FeatureParentIssueSourceIdMissing,
-    R | FeatureStorageRoot | Path.Path
-  > {
+  Effect.fnUntraced(function* (options: RunFeatureOptions) {
     if (options.feature.executionMode === "ralph") {
       const specFile = yield* resolveFeatureSpecFilePath(options)
-      return yield* executeRalphFeature({
+      yield* executeRalphFeature({
         ...options,
         specFile,
         targetBranch: Option.some(options.feature.featureBranch),
       })
+      yield* FeatureFinalIntegration.reconcile(options.feature)
+      return
     }
 
     if (!options.feature.parentIssueSourceId) {
@@ -907,11 +904,12 @@ export const executeRunFeatureWith = <E, R>(
       })
     }
 
-    return yield* executePrFeature({
+    yield* executePrFeature({
       ...options,
       parentIssueSourceId: options.feature.parentIssueSourceId,
       targetBranch: Option.some(options.feature.featureBranch),
     })
+    yield* FeatureFinalIntegration.reconcile(options.feature)
   })
 
 export const executeRunFeature = executeRunFeatureWith(
