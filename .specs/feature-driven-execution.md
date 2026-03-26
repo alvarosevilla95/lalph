@@ -445,6 +445,12 @@ state and supports both PR-mode and Ralph-mode features uniformly.
   execution mode, spec path, base branch, feature branch, and lifecycle status,
   persists updates through `FeatureStore.update(...)`, and can optionally
   reopen the feature spec in the configured editor after saving metadata.
+- Implementation note: the `lalph run` CLI surface now exists as a distinct
+  command group with `run issues`, `run feature <name>`, and `run all`, and
+  bare `lalph` now dispatches through the same `run all` entrypoint. The
+  current live runtime still only executes the pre-existing top-level issue
+  loop; `run feature <name>` resolves stored feature metadata and leaves
+  feature-aware execution behavior to the next implementation step.
 
 ## Implementation Plan
 
@@ -466,9 +472,11 @@ state and supports both PR-mode and Ralph-mode features uniformly.
    - `lalph features edit <name>` now updates stored feature metadata through a
      dedicated edit wizard, preserves non-edited durable references, and can
      optionally reopen the feature spec file in the user's editor.
-3. [ ] Add `lalph run` command variants.
+3. [x] Add `lalph run` command variants.
    - Implement `run issues`, `run feature <name>`, and `run all`.
    - Make bare `lalph` default to `run all`.
+   - Command-level dispatch coverage now verifies bare `lalph`, `run issues`,
+     `run feature <name>`, and `run all` against a shared run-service boundary.
 4. [ ] Integrate feature-aware execution behavior.
    - Preserve simple issue execution.
    - Add PR-mode feature execution against issue-source child tasks.

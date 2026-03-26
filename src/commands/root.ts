@@ -1,5 +1,4 @@
 import {
-  Config,
   Data,
   Deferred,
   Duration,
@@ -22,7 +21,7 @@ import {
 import { PromptGen } from "../PromptGen.ts"
 import { Prd } from "../Prd.ts"
 import { Worktree } from "../Worktree.ts"
-import { Flag, Command, Prompt } from "effect/unstable/cli"
+import { Command, Prompt } from "effect/unstable/cli"
 import { IssueSource, IssueSourceError } from "../IssueSource.ts"
 import { CurrentIssueSource, resetInProgress } from "../CurrentIssueSource.ts"
 import { GithubCli } from "../Github/Cli.ts"
@@ -59,6 +58,13 @@ import { ClankaMuxerLayer, SemanticSearchLayer } from "../Clanka.ts"
 import { agentResearcher } from "../Agents/researcher.ts"
 import { agentChooserRalph } from "../Agents/chooserRalph.ts"
 import { CurrentTask } from "../domain/CurrentTask.ts"
+import { RunService } from "../RunService.ts"
+import {
+  runCommandFlags,
+  specsDirectory,
+  verbose,
+  type RunCommandOptions,
+} from "./run/options.ts"
 
 // Main iteration run logic
 
@@ -695,116 +701,66 @@ const runProject = Effect.fnUntraced(
 
 // Command
 
-const iterations = Flag.integer("iterations").pipe(
-  Flag.withDescription(
-    "Limit how many task iterations run per enabled project (default: unlimited). Use -i 1 to run a single iteration and exit.",
-  ),
-  Flag.withAlias("i"),
-  Flag.withDefault(Number.POSITIVE_INFINITY),
+export const executeRunAll = Effect.fnUntraced(
+  function* ({
+    iterations,
+    maxIterationMinutes,
+    maxContext,
+    stallMinutes,
+    specsDirectory,
+  }: RunCommandOptions) {
+    yield* getDefaultCliAgentPreset
+
+    let allProjects = yield* getAllProjects
+    if (allProjects.length === 0) {
+      yield* welcomeWizard
+      allProjects = yield* getAllProjects
+    }
+
+    const projects = allProjects.filter((p) => p.enabled)
+    if (projects.length === 0) {
+      return yield* Effect.log(
+        "No enabled projects found. Run 'lalph projects toggle' to enable one.",
+      )
+    }
+    yield* Effect.forEach(
+      projects,
+      (project) =>
+        runProject({
+          iterations,
+          project,
+          specsDirectory,
+          stallTimeout: Duration.minutes(stallMinutes),
+          runTimeout: Duration.minutes(maxIterationMinutes),
+          maxContext,
+        }).pipe(Effect.provideService(CurrentProjectId, project.id)),
+      { concurrency: "unbounded", discard: true },
+    )
+  },
+  Effect.scoped,
+  Effect.provide([
+    ClankaMuxerLayer,
+    PromptGen.layer,
+    GithubCli.layer,
+    Settings.layer,
+    CurrentIssueSource.layer,
+    AtomRegistry.layer,
+    Reactivity.layer,
+  ]),
 )
 
-const maxIterationMinutes = Flag.integer("max-minutes").pipe(
-  Flag.withDescription(
-    "Timeout an iteration if execution (and review, if enabled) exceeds this many minutes (default: LALPH_MAX_MINUTES or 90).",
-  ),
-  Flag.withFallbackConfig(Config.int("LALPH_MAX_MINUTES")),
-  Flag.withDefault(90),
-)
+export const executeRunIssues = (options: RunCommandOptions) =>
+  executeRunAll(options)
 
-const maxContext = Flag.integer("max-context").pipe(
-  Flag.withDescription(
-    "If the context window reaches this number of tokens, try again (default: LALPH_MAX_CONTEXT or 250,000).",
-  ),
-  Flag.withFallbackConfig(Config.int("LALPH_MAX_TOKENS")),
-  Flag.withDefault(250000),
-)
-
-const stallMinutes = Flag.integer("stall-minutes").pipe(
-  Flag.withDescription(
-    "Fail an iteration if the agent stops responding for this many minutes (default: LALPH_STALL_MINUTES or 5).",
-  ),
-  Flag.withFallbackConfig(Config.int("LALPH_STALL_MINUTES")),
-  Flag.withDefault(5),
-)
-
-const specsDirectory = Flag.directory("specs").pipe(
-  Flag.withDescription(
-    "Directory where plan specs are written and read (default: LALPH_SPECS or .specs).",
-  ),
-  Flag.withAlias("s"),
-  Flag.withFallbackConfig(Config.string("LALPH_SPECS")),
-  Flag.withDefault(".specs"),
-)
-
-const verbose = Flag.boolean("verbose").pipe(
-  Flag.withDescription(
-    "Increase log output for debugging. Use -v when you need detailed logs.",
-  ),
-  Flag.withAlias("v"),
-)
-
-export const commandRoot = Command.make("lalph", {
-  iterations,
-  maxIterationMinutes,
-  maxContext,
-  stallMinutes,
-}).pipe(
+export const commandRoot = Command.make("lalph", runCommandFlags).pipe(
   Command.withSharedFlags({
     specsDirectory,
     verbose,
   }),
   Command.withDescription(
-    "Run the task loop across all enabled projects in parallel: pull issues from the current issue source and execute them with your configured agent preset(s). Use --iterations for a bounded run, and configure per-project concurrency via lalph projects edit.",
+    "Default entrypoint. Equivalent to `lalph run all` and keeps the current global execution loop available at the top level.",
   ),
-  Command.withHandler(
-    Effect.fnUntraced(
-      function* ({
-        iterations,
-        maxIterationMinutes,
-        maxContext,
-        stallMinutes,
-        specsDirectory,
-      }) {
-        yield* getDefaultCliAgentPreset
-
-        let allProjects = yield* getAllProjects
-        if (allProjects.length === 0) {
-          yield* welcomeWizard
-          allProjects = yield* getAllProjects
-        }
-
-        const projects = allProjects.filter((p) => p.enabled)
-        if (projects.length === 0) {
-          return yield* Effect.log(
-            "No enabled projects found. Run 'lalph projects toggle' to enable one.",
-          )
-        }
-        yield* Effect.forEach(
-          projects,
-          (project) =>
-            runProject({
-              iterations,
-              project,
-              specsDirectory,
-              stallTimeout: Duration.minutes(stallMinutes),
-              runTimeout: Duration.minutes(maxIterationMinutes),
-              maxContext,
-            }).pipe(Effect.provideService(CurrentProjectId, project.id)),
-          { concurrency: "unbounded", discard: true },
-        )
-      },
-      Effect.scoped,
-      Effect.provide([
-        ClankaMuxerLayer,
-        PromptGen.layer,
-        GithubCli.layer,
-        Settings.layer,
-        CurrentIssueSource.layer,
-        AtomRegistry.layer,
-        Reactivity.layer,
-      ]),
-    ),
-  ),
+  Command.withHandler((options) => RunService.runAll(options)),
 )
 
 const watchTaskState = Effect.fnUntraced(function* (options: {
