@@ -35,7 +35,6 @@ the main daemon-like entrypoint and default to `lalph run all`.
   beyond what is required to support features.
 - No requirement that Ralph mode mirror its execution state into the issue
   source.
-- No final decision yet on the exact `run all` scheduling policy.
 - No attempt in this phase to support multiple tracking modes for Ralph.
 - No web UI or TUI; CLI only.
 
@@ -297,8 +296,10 @@ Derived operational transitions:
 ### `lalph run all`
 
 - Process top-level issues and all active features.
-- Scheduling policy is intentionally deferred for this PRD; the design should
-  leave room for a fair scheduler across work sources.
+- Build one global target list by alternating sorted enabled projects and
+  sorted active features where both are available.
+- Start with the next sorted project, then the next sorted active feature, and
+  drain whichever list still has entries in its own sorted order.
 
 ### `lalph features create`
 
@@ -422,11 +423,10 @@ state and supports both PR-mode and Ralph-mode features uniformly.
 - Feature completion is derived from final integration PR merge state.
 - Feature metadata is stored locally in `.lalph/features/`.
 - The design leaves room for a later manual finalize escape hatch and a later
-  scheduler policy decision for `run all`.
+  scheduler evolution for `run all`.
 
 ## Out of Scope
 
-- Finalizing the exact scheduling policy for `lalph run all`.
 - Finalizing the exact on-disk serialization format (`yaml` vs `json`) for
   feature metadata.
 - Shipping pause/resume/finalize commands in the first iteration unless they
@@ -441,8 +441,6 @@ state and supports both PR-mode and Ralph-mode features uniformly.
   state and richer in derived state.
 - Prompting for a feature branch name during creation is preferred to enforcing
   a rigid branch naming convention.
-- The unresolved scheduler policy should be captured as an explicit follow-up
-  design decision rather than being improvised during implementation.
 - Implementation note: the task prompt referenced
   `/Users/alvaro/Developer/cloned/lalph/.specs/feature-driven-execution.md`,
   but this checkout only contains the local `.specs/feature-driven-execution.md`
@@ -492,8 +490,9 @@ resume <name>` now provide dedicated manual lifecycle controls over stored
 - Implementation note: `lalph run all` now loads stored features from
   `.lalph/features/`, filters them to `lifecycleStatus: "active"`, sorts
   enabled projects by project id and active features by feature name for a
-  simple deterministic launch order, and runs both the existing top-level
-  project loops and active feature loops from the same global path.
+  fair round-robin launch order, alternates between the two work sources where
+  possible, and runs both the existing top-level project loops and active
+  feature loops from the same global path.
 - Implementation note: simple issue execution is now explicitly scoped to
   parentless issue-source tasks. Both `lalph run issues` and the top-level
   project portion of `lalph run all` exclude feature child tasks so feature PR
@@ -586,6 +585,9 @@ resume <name>` now provide dedicated manual lifecycle controls over stored
    - Command-level coverage now verifies PR-mode creation, Ralph-mode reopen,
      duplicate avoidance for already-integrating features, and persistence of
      stored final PR ids through both named-feature and global run paths.
-6. [ ] Resolve remaining deferred UX follow-ups.
+6. [x] Resolve remaining deferred UX follow-ups.
    - [x] Add dedicated manual pause/resume controls.
-   - [ ] Finalize `run all` scheduling policy.
+   - [x] Finalize `run all` scheduling policy.
+   - `lalph run all` now alternates sorted enabled projects and sorted active
+     features where possible, with the ordering policy extracted into a small
+     helper and covered by dedicated unit tests plus command-level coverage.

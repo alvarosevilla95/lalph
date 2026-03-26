@@ -69,6 +69,10 @@ import type { RunFeatureOptions } from "../RunService.ts"
 import { FeatureStorageRoot, FeatureStore } from "../FeatureStore.ts"
 import { FeatureFinalIntegration } from "../FeatureFinalIntegration.ts"
 import {
+  scheduleGlobalRunTargets,
+  sortProjectsForGlobalRun,
+} from "./runAllScheduling.ts"
+import {
   scopeIssueSourceToParentIssueSourceId,
   scopeIssueSourceToTopLevelIssues,
 } from "../IssueSourceScope.ts"
@@ -917,12 +921,6 @@ export const executeRunFeature = executeRunFeatureWith(
   executeRunFeatureRalph,
 )
 
-const sortProjectsForGlobalRun = (projects: ReadonlyArray<Project>) =>
-  projects.toSorted((a, b) => String(a.id).localeCompare(String(b.id)))
-
-const sortFeaturesForGlobalRun = (features: ReadonlyArray<Feature>) =>
-  features.toSorted((a, b) => String(a.name).localeCompare(String(b.name)))
-
 const resolveEnabledProjectsForRun = Effect.fnUntraced(function* () {
   yield* getDefaultCliAgentPreset
 
@@ -1004,11 +1002,9 @@ export const executeRunAllWith = <E1, R1, E2, R2, E3, R3, E4, R4>(
   ) => Effect.Effect<void, E4, R4>,
 ) =>
   Effect.fnUntraced(function* (options: RunCommandOptions) {
-    const projects = sortProjectsForGlobalRun(yield* resolveEnabledProjects())
-    const features = sortFeaturesForGlobalRun(
-      (yield* listFeatures).filter(
-        (feature) => feature.lifecycleStatus === "active",
-      ),
+    const projects = yield* resolveEnabledProjects()
+    const features = (yield* listFeatures).filter(
+      (feature) => feature.lifecycleStatus === "active",
     )
 
     if (projects.length === 0 && features.length === 0) {
@@ -1017,10 +1013,7 @@ export const executeRunAllWith = <E1, R1, E2, R2, E3, R3, E4, R4>(
       )
     }
 
-    const targets = [
-      ...projects.map((project) => ({ _tag: "Project" as const, project })),
-      ...features.map((feature) => ({ _tag: "Feature" as const, feature })),
-    ]
+    const targets = scheduleGlobalRunTargets(projects, features)
 
     const fibers = yield* Effect.forEach(
       targets,

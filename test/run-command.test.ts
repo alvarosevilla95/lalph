@@ -505,8 +505,8 @@ describe("run commands", () => {
 
     assert.deepEqual(calls, [
       "project:project-alpha",
-      "project:project-beta",
       "feature:feature-alpha",
+      "project:project-beta",
       "feature:feature-zeta",
     ])
   })
