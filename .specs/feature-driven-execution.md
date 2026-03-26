@@ -472,6 +472,15 @@ state and supports both PR-mode and Ralph-mode features uniformly.
   owning project. Project-scoped Ralph runs still disable the project when the
   Ralph spec is exhausted, but named feature runs stop after the feature is
   done without mutating project enablement.
+- Implementation note: `lalph run all` now loads stored features from
+  `.lalph/features/`, filters them to `lifecycleStatus: "active"`, sorts
+  enabled projects by project id and active features by feature name for a
+  simple deterministic launch order, and runs both the existing top-level
+  project loops and active feature loops from the same global path.
+- Implementation note: simple issue execution is now explicitly scoped to
+  parentless issue-source tasks. Both `lalph run issues` and the top-level
+  project portion of `lalph run all` exclude feature child tasks so feature PR
+  work is not double-run by the generic issue loop.
 
 ## Implementation Plan
 
@@ -498,8 +507,8 @@ state and supports both PR-mode and Ralph-mode features uniformly.
    - Make bare `lalph` default to `run all`.
    - Command-level dispatch coverage now verifies bare `lalph`, `run issues`,
      `run feature <name>`, and `run all` against a shared run-service boundary.
-4. [ ] Integrate feature-aware execution behavior.
-   - Preserve simple issue execution.
+4. [x] Integrate feature-aware execution behavior.
+   - [x] Preserve simple issue execution.
    - [x] Add PR-mode feature execution against issue-source child tasks.
    - [x] Add Ralph-mode feature execution against the spec file and feature branch.
    - `lalph run feature <name>` now dispatches stored Ralph-mode features into
@@ -510,6 +519,9 @@ state and supports both PR-mode and Ralph-mode features uniformly.
      missing `parentIssueSourceId`, scopes task resolution to child tasks under
      that parent, and targets the feature branch for worktree setup and child
      PR creation.
+   - `lalph run all` now includes active stored features in addition to enabled
+     project execution, while `lalph run issues` remains limited to top-level
+     parentless tasks.
 5. [ ] Add feature status derivation and integration PR automation.
    - Compute derived display status from local + external state.
    - Automatically create/open final integration PRs when features become ready.

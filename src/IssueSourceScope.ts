@@ -3,47 +3,54 @@ import { IssuesChange, IssueSource } from "./IssueSource.ts"
 import type { PrdIssue } from "./domain/PrdIssue.ts"
 import type { ProjectId } from "./domain/Project.ts"
 
+type IssuePredicate = (issue: PrdIssue) => boolean
+
+const filterIssues = (
+  issues: ReadonlyArray<PrdIssue>,
+  predicate: IssuePredicate,
+) => issues.filter(predicate)
+
 export const filterIssuesByParentIssueSourceId = (
   issues: ReadonlyArray<PrdIssue>,
   parentIssueSourceId: string,
-) => issues.filter((issue) => issue.parentIssueSourceId === parentIssueSourceId)
-
-const filterIssuesChangeByParentIssueSourceId = (
-  change: IssuesChange,
-  parentIssueSourceId: string,
-) => {
-  const issues = filterIssuesByParentIssueSourceId(
-    change.issues,
-    parentIssueSourceId,
+) =>
+  filterIssues(
+    issues,
+    (issue) => issue.parentIssueSourceId === parentIssueSourceId,
   )
+
+export const filterTopLevelIssues = (issues: ReadonlyArray<PrdIssue>) =>
+  filterIssues(issues, (issue) => issue.parentIssueSourceId === undefined)
+
+const scopeIssuesChange = (change: IssuesChange, predicate: IssuePredicate) => {
+  const issues = filterIssues(change.issues, predicate)
 
   return change._tag === "Internal"
     ? IssuesChange.Internal({ issues })
     : IssuesChange.External({ issues })
 }
 
-const isChildOfParentIssueSourceId = (
-  issue: PrdIssue | null,
-  parentIssueSourceId: string,
-) => issue?.parentIssueSourceId === parentIssueSourceId
+const isTopLevelIssue = (issue: PrdIssue | null) =>
+  issue?.parentIssueSourceId === undefined
+
+const isChildOfParentIssueSourceId =
+  (parentIssueSourceId: string) => (issue: PrdIssue | null) =>
+    issue?.parentIssueSourceId === parentIssueSourceId
 
 const makeScopedRef = Effect.fnUntraced(function* (
   source: IssueSource["Service"],
   projectId: ProjectId,
-  parentIssueSourceId: string,
+  predicate: IssuePredicate,
 ) {
   const upstream = yield* source.ref(projectId)
   const initial = yield* SubscriptionRef.get(upstream)
   const scoped = yield* SubscriptionRef.make(
-    filterIssuesChangeByParentIssueSourceId(initial, parentIssueSourceId),
+    scopeIssuesChange(initial, predicate),
   )
 
   yield* SubscriptionRef.changes(upstream).pipe(
     Stream.runForEach((change) =>
-      SubscriptionRef.set(
-        scoped,
-        filterIssuesChangeByParentIssueSourceId(change, parentIssueSourceId),
-      ),
+      SubscriptionRef.set(scoped, scopeIssuesChange(change, predicate)),
     ),
     Effect.forkScoped,
   )
@@ -51,8 +58,9 @@ const makeScopedRef = Effect.fnUntraced(function* (
   return scoped
 })
 
-export const scopeIssueSourceToParentIssueSourceId = (
-  parentIssueSourceId: string,
+const scopeIssueSource = (
+  predicate: IssuePredicate,
+  matchesIssue: (issue: PrdIssue | null) => boolean,
 ) =>
   Layer.effect(
     IssueSource,
@@ -60,7 +68,7 @@ export const scopeIssueSourceToParentIssueSourceId = (
       const source = yield* IssueSource
       const refs = yield* ScopedCache.make({
         lookup: (projectId: ProjectId) =>
-          makeScopedRef(source, projectId, parentIssueSourceId),
+          makeScopedRef(source, projectId, predicate),
         capacity: Number.MAX_SAFE_INTEGER,
       })
 
@@ -69,21 +77,11 @@ export const scopeIssueSourceToParentIssueSourceId = (
         issues: (projectId) =>
           source
             .issues(projectId)
-            .pipe(
-              Effect.map((issues) =>
-                filterIssuesByParentIssueSourceId(issues, parentIssueSourceId),
-              ),
-            ),
+            .pipe(Effect.map((issues) => filterIssues(issues, predicate))),
         findById: (projectId, issueId) =>
           source
             .findById(projectId, issueId)
-            .pipe(
-              Effect.map((issue) =>
-                isChildOfParentIssueSourceId(issue, parentIssueSourceId)
-                  ? issue
-                  : null,
-              ),
-            ),
+            .pipe(Effect.map((issue) => (matchesIssue(issue) ? issue : null))),
         createIssue: (projectId, issue) => source.createIssue(projectId, issue),
         updateIssue: (options) => source.updateIssue(options),
         cancelIssue: (projectId, issueId) =>
@@ -99,11 +97,25 @@ export const scopeIssueSourceToParentIssueSourceId = (
             .findById(projectId, issueId)
             .pipe(
               Effect.flatMap((issue) =>
-                isChildOfParentIssueSourceId(issue, parentIssueSourceId)
+                matchesIssue(issue)
                   ? source.ensureInProgress(projectId, issueId)
                   : Effect.void,
               ),
             ),
       })
     }),
+  )
+
+export const scopeIssueSourceToParentIssueSourceId = (
+  parentIssueSourceId: string,
+) =>
+  scopeIssueSource(
+    (issue) => issue.parentIssueSourceId === parentIssueSourceId,
+    isChildOfParentIssueSourceId(parentIssueSourceId),
+  )
+
+export const scopeIssueSourceToTopLevelIssues = () =>
+  scopeIssueSource(
+    (issue) => issue.parentIssueSourceId === undefined,
+    isTopLevelIssue,
   )

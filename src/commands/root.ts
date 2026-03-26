@@ -66,8 +66,11 @@ import { agentChooserRalph } from "../Agents/chooserRalph.ts"
 import { CurrentTask } from "../domain/CurrentTask.ts"
 import { RunService } from "../RunService.ts"
 import type { RunFeatureOptions } from "../RunService.ts"
-import { FeatureStorageRoot } from "../FeatureStore.ts"
-import { scopeIssueSourceToParentIssueSourceId } from "../IssueSourceScope.ts"
+import { FeatureStorageRoot, FeatureStore } from "../FeatureStore.ts"
+import {
+  scopeIssueSourceToParentIssueSourceId,
+  scopeIssueSourceToTopLevelIssues,
+} from "../IssueSourceScope.ts"
 import { RunTargetBranch } from "../RunTargetBranch.ts"
 import {
   runCommandFlags,
@@ -75,6 +78,7 @@ import {
   verbose,
   type RunCommandOptions,
 } from "./run/options.ts"
+import type { Feature } from "../domain/Feature.ts"
 // Main iteration run logic
 
 const run = Effect.fnUntraced(
@@ -764,62 +768,10 @@ const runProject = Effect.fnUntraced(function* (options: {
     runTimeout: options.runTimeout,
     targetBranch: options.project.targetBranch,
     gitFlowLayer: resolveGitFlowLayer(),
-  })
+  }).pipe(Effect.provide(scopeIssueSourceToTopLevelIssues()))
 })
 
 // Command
-
-export const executeRunAll = Effect.fnUntraced(
-  function* ({
-    iterations,
-    maxIterationMinutes,
-    maxContext,
-    stallMinutes,
-    specsDirectory,
-  }: RunCommandOptions) {
-    yield* getDefaultCliAgentPreset
-
-    let allProjects = yield* getAllProjects
-    if (allProjects.length === 0) {
-      yield* welcomeWizard
-      allProjects = yield* getAllProjects
-    }
-
-    const projects = allProjects.filter((p) => p.enabled)
-    if (projects.length === 0) {
-      return yield* Effect.log(
-        "No enabled projects found. Run 'lalph projects toggle' to enable one.",
-      )
-    }
-    yield* Effect.forEach(
-      projects,
-      (project) =>
-        runProject({
-          iterations,
-          project,
-          specsDirectory,
-          stallTimeout: Duration.minutes(stallMinutes),
-          runTimeout: Duration.minutes(maxIterationMinutes),
-          maxContext,
-        }).pipe(Effect.provideService(CurrentProjectId, project.id)),
-      { concurrency: "unbounded", discard: true },
-    )
-  },
-  Effect.scoped,
-  Effect.provide([
-    ClankaMuxerLayer,
-    PromptGen.layer,
-    GithubCli.layer,
-    Settings.layer,
-    CurrentIssueSource.layer,
-    AtomRegistry.layer,
-    Reactivity.layer,
-    RunTargetBranch.layerDefault,
-  ]),
-)
-
-export const executeRunIssues = (options: RunCommandOptions) =>
-  executeRunAll(options)
 
 const resolveFeatureSpecFilePath = Effect.fnUntraced(function* (
   options: RunFeatureOptions,
@@ -966,6 +918,172 @@ export const executeRunFeature = executeRunFeatureWith(
   executeRunFeaturePr,
   executeRunFeatureRalph,
 )
+
+const sortProjectsForGlobalRun = (projects: ReadonlyArray<Project>) =>
+  projects.toSorted((a, b) => String(a.id).localeCompare(String(b.id)))
+
+const sortFeaturesForGlobalRun = (features: ReadonlyArray<Feature>) =>
+  features.toSorted((a, b) => String(a.name).localeCompare(String(b.name)))
+
+const resolveEnabledProjectsForRun = Effect.fnUntraced(function* () {
+  yield* getDefaultCliAgentPreset
+
+  let allProjects = yield* getAllProjects
+  if (allProjects.length === 0) {
+    yield* welcomeWizard
+    allProjects = yield* getAllProjects
+  }
+
+  return sortProjectsForGlobalRun(
+    allProjects.filter((project) => project.enabled),
+  )
+})
+
+const listFeaturesForRun = FeatureStore.list()
+
+export const executeRunIssuesWith = <E1, R1, E2, R2>(
+  resolveEnabledProjects: () => Effect.Effect<ReadonlyArray<Project>, E1, R1>,
+  executeProjectRun: (options: {
+    readonly iterations: number
+    readonly project: Project
+    readonly specsDirectory: string
+    readonly stallTimeout: Duration.Duration
+    readonly runTimeout: Duration.Duration
+    readonly maxContext: number | undefined
+  }) => Effect.Effect<void, E2, R2>,
+) =>
+  Effect.fnUntraced(function* ({
+    iterations,
+    maxIterationMinutes,
+    maxContext,
+    stallMinutes,
+    specsDirectory,
+  }: RunCommandOptions) {
+    const projects = sortProjectsForGlobalRun(yield* resolveEnabledProjects())
+
+    if (projects.length === 0) {
+      return yield* Effect.log(
+        "No enabled projects found. Run 'lalph projects toggle' to enable one.",
+      )
+    }
+
+    const fibers = yield* Effect.forEach(
+      projects,
+      (project) =>
+        executeProjectRun({
+          iterations,
+          project,
+          specsDirectory,
+          stallTimeout: Duration.minutes(stallMinutes),
+          runTimeout: Duration.minutes(maxIterationMinutes),
+          maxContext,
+        }).pipe(
+          Effect.provideService(CurrentProjectId, project.id),
+          Effect.forkScoped,
+        ),
+      { concurrency: 1 },
+    )
+
+    yield* Effect.forEach(fibers, Fiber.join, {
+      concurrency: "unbounded",
+      discard: true,
+    })
+  })
+
+export const executeRunAllWith = <E1, R1, E2, R2, E3, R3, E4, R4>(
+  resolveEnabledProjects: () => Effect.Effect<ReadonlyArray<Project>, E1, R1>,
+  listFeatures: Effect.Effect<ReadonlyArray<Feature>, E2, R2>,
+  executeProjectRun: (options: {
+    readonly iterations: number
+    readonly project: Project
+    readonly specsDirectory: string
+    readonly stallTimeout: Duration.Duration
+    readonly runTimeout: Duration.Duration
+    readonly maxContext: number | undefined
+  }) => Effect.Effect<void, E3, R3>,
+  executeFeatureRun: (
+    options: RunFeatureOptions,
+  ) => Effect.Effect<void, E4, R4>,
+) =>
+  Effect.fnUntraced(function* (options: RunCommandOptions) {
+    const projects = sortProjectsForGlobalRun(yield* resolveEnabledProjects())
+    const features = sortFeaturesForGlobalRun(
+      (yield* listFeatures).filter(
+        (feature) => feature.lifecycleStatus === "active",
+      ),
+    )
+
+    if (projects.length === 0 && features.length === 0) {
+      return yield* Effect.log(
+        "No enabled projects or active features found. Run 'lalph projects toggle' to enable a project or 'lalph features edit <name>' to activate a feature.",
+      )
+    }
+
+    const targets = [
+      ...projects.map((project) => ({ _tag: "Project" as const, project })),
+      ...features.map((feature) => ({ _tag: "Feature" as const, feature })),
+    ]
+
+    const fibers = yield* Effect.forEach(
+      targets,
+      (target) =>
+        (target._tag === "Project"
+          ? executeProjectRun({
+              iterations: options.iterations,
+              project: target.project,
+              specsDirectory: options.specsDirectory,
+              stallTimeout: Duration.minutes(options.stallMinutes),
+              runTimeout: Duration.minutes(options.maxIterationMinutes),
+              maxContext: options.maxContext,
+            }).pipe(Effect.provideService(CurrentProjectId, target.project.id))
+          : executeFeatureRun({
+              ...options,
+              feature: target.feature,
+            })
+        ).pipe(Effect.forkScoped),
+      { concurrency: 1 },
+    )
+
+    yield* Effect.forEach(fibers, Fiber.join, {
+      concurrency: "unbounded",
+      discard: true,
+    })
+  })
+
+const runCommandLayer = Layer.mergeAll(
+  ClankaMuxerLayer,
+  PromptGen.layer,
+  GithubCli.layer,
+  Settings.layer,
+  CurrentIssueSource.layer,
+  AtomRegistry.layer,
+  Reactivity.layer,
+  RunTargetBranch.layerDefault,
+)
+
+const executeRunIssuesInternal = executeRunIssuesWith(
+  resolveEnabledProjectsForRun,
+  runProject,
+)
+
+const executeRunAllInternal = executeRunAllWith(
+  resolveEnabledProjectsForRun,
+  listFeaturesForRun,
+  runProject,
+  executeRunFeature,
+)
+
+export const executeRunIssues = (options: RunCommandOptions) =>
+  executeRunIssuesInternal(options).pipe(
+    Effect.scoped,
+    Effect.provide(runCommandLayer),
+  )
+
+export const executeRunAll = (options: RunCommandOptions) =>
+  executeRunAllInternal(options).pipe(
+    Effect.scoped,
+    Effect.provide(runCommandLayer),
+  )
 
 export const commandRoot = Command.make("lalph", runCommandFlags).pipe(
   Command.withSharedFlags({

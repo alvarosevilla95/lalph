@@ -9,11 +9,12 @@ import { appCommand } from "../src/app.ts"
 import { FeatureStorageRoot, FeatureStore } from "../src/FeatureStore.ts"
 import { RunService } from "../src/RunService.ts"
 import {
+  executeRunAllWith,
   executeRunFeatureWith,
   FeatureParentIssueSourceIdMissing,
 } from "../src/commands/root.ts"
 import { Feature, FeatureName } from "../src/domain/Feature.ts"
-import { ProjectId } from "../src/domain/Project.ts"
+import { Project, ProjectId } from "../src/domain/Project.ts"
 import { PlatformServices } from "../src/shared/platform.ts"
 
 const tempDirectories: Array<string> = []
@@ -41,6 +42,17 @@ const makeFeature = (name: string) =>
     baseBranch: "master",
     featureBranch: `feature/${name}`,
     lifecycleStatus: "active",
+  })
+
+const makeProject = (id: string) =>
+  new Project({
+    id: ProjectId.makeUnsafe(id),
+    enabled: true,
+    targetBranch: Option.some("master"),
+    concurrency: 1,
+    gitFlow: "pr",
+    researchAgent: false,
+    reviewAgent: false,
   })
 
 const seedFeatures = (directory: string, features: ReadonlyArray<Feature>) =>
@@ -272,6 +284,49 @@ describe("run commands", () => {
 
     assert.deepEqual(calls, [
       `${path.join(directory, ".specs/nested/feature-spec-path.md")}:feature/spec-path`,
+    ])
+  })
+
+  it("runs enabled projects together with active stored features in the global loop", async () => {
+    const calls: Array<string> = []
+
+    await Effect.runPromise(
+      Effect.scoped(
+        executeRunAllWith(
+          () =>
+            Effect.succeed([
+              makeProject("project-beta"),
+              makeProject("project-alpha"),
+            ]),
+          Effect.succeed([
+            makeFeature("feature-zeta"),
+            makeFeature("feature-draft").update({ lifecycleStatus: "draft" }),
+            makeFeature("feature-alpha"),
+            makeFeature("feature-paused").update({ lifecycleStatus: "paused" }),
+          ]),
+          ({ project }) =>
+            Effect.sync(() => {
+              calls.push(`project:${project.id}`)
+            }),
+          ({ feature }) =>
+            Effect.sync(() => {
+              calls.push(`feature:${feature.name}`)
+            }),
+        )({
+          iterations: 1,
+          maxIterationMinutes: 30,
+          maxContext: 1200,
+          stallMinutes: 5,
+          specsDirectory: ".specs",
+        }),
+      ),
+    )
+
+    assert.deepEqual(calls, [
+      "project:project-alpha",
+      "project:project-beta",
+      "feature:feature-alpha",
+      "feature:feature-zeta",
     ])
   })
 
