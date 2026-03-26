@@ -13,6 +13,7 @@ import {
   FeatureParentIssueBootstrapFailed,
 } from "../src/FeatureCreationBootstrap.ts"
 import { FeatureEditWizard } from "../src/FeatureEditing.ts"
+import { InvalidFeatureLifecycleTransition } from "../src/FeatureLifecycle.ts"
 import { FeatureStatus } from "../src/FeatureStatus.ts"
 import {
   FeatureAlreadyExists,
@@ -328,6 +329,112 @@ describe("features commands", () => {
     assert.equal(
       exit.cause.reasons[0]?.error.message,
       'Feature "missing-feature" was not found.',
+    )
+  })
+
+  it("pauses an active feature", async () => {
+    const directory = await makeTempDirectory()
+    await seedFeatures(directory, [makeFeature("feature-pause")])
+
+    const { output } = await captureConsoleLogs(() =>
+      Effect.runPromise(
+        runFeaturesCommand(directory, ["pause", "feature-pause"]),
+      ),
+    )
+
+    assert.match(output, /Paused feature: feature-pause/)
+    assert.match(output, /  Lifecycle status: active -> paused/)
+
+    const persistedFeature = Feature.decodeSync(
+      await readFile(
+        path.join(directory, ".lalph", "features", "feature-pause.json"),
+        "utf8",
+      ),
+    )
+
+    assert.equal(persistedFeature.lifecycleStatus, "paused")
+  })
+
+  it("resumes a paused feature", async () => {
+    const directory = await makeTempDirectory()
+    await seedFeatures(directory, [
+      makeFeature("feature-resume", { lifecycleStatus: "paused" }),
+    ])
+
+    const { output } = await captureConsoleLogs(() =>
+      Effect.runPromise(
+        runFeaturesCommand(directory, ["resume", "feature-resume"]),
+      ),
+    )
+
+    assert.match(output, /Resumed feature: feature-resume/)
+    assert.match(output, /  Lifecycle status: paused -> active/)
+
+    const persistedFeature = Feature.decodeSync(
+      await readFile(
+        path.join(directory, ".lalph", "features", "feature-resume.json"),
+        "utf8",
+      ),
+    )
+
+    assert.equal(persistedFeature.lifecycleStatus, "active")
+  })
+
+  it("fails clearly for unknown feature names in features pause and resume", async () => {
+    const directory = await makeTempDirectory()
+
+    const pauseExit = await Effect.runPromiseExit(
+      runFeaturesCommand(directory, ["pause", "missing-feature"]),
+    )
+    const resumeExit = await Effect.runPromiseExit(
+      runFeaturesCommand(directory, ["resume", "missing-feature"]),
+    )
+
+    assert.equal(pauseExit._tag, "Failure")
+    assert.equal(resumeExit._tag, "Failure")
+    assert.ok(pauseExit.cause.reasons[0]?.error instanceof FeatureNotFound)
+    assert.ok(resumeExit.cause.reasons[0]?.error instanceof FeatureNotFound)
+    assert.equal(
+      pauseExit.cause.reasons[0]?.error.message,
+      'Feature "missing-feature" was not found.',
+    )
+    assert.equal(
+      resumeExit.cause.reasons[0]?.error.message,
+      'Feature "missing-feature" was not found.',
+    )
+  })
+
+  it("refuses invalid pause and resume lifecycle transitions", async () => {
+    const directory = await makeTempDirectory()
+    await seedFeatures(directory, [
+      makeFeature("feature-draft", { lifecycleStatus: "draft" }),
+      makeFeature("feature-complete", { lifecycleStatus: "complete" }),
+    ])
+
+    const pauseExit = await Effect.runPromiseExit(
+      runFeaturesCommand(directory, ["pause", "feature-draft"]),
+    )
+    const resumeExit = await Effect.runPromiseExit(
+      runFeaturesCommand(directory, ["resume", "feature-complete"]),
+    )
+
+    assert.equal(pauseExit._tag, "Failure")
+    assert.equal(resumeExit._tag, "Failure")
+    assert.ok(
+      pauseExit.cause.reasons[0]?.error instanceof
+        InvalidFeatureLifecycleTransition,
+    )
+    assert.ok(
+      resumeExit.cause.reasons[0]?.error instanceof
+        InvalidFeatureLifecycleTransition,
+    )
+    assert.equal(
+      pauseExit.cause.reasons[0]?.error.message,
+      'Feature "feature-draft" cannot transition from "draft" to "paused".',
+    )
+    assert.equal(
+      resumeExit.cause.reasons[0]?.error.message,
+      'Feature "feature-complete" cannot transition from "complete" to "active".',
     )
   })
 

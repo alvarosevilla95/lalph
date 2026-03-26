@@ -333,6 +333,20 @@ Derived operational transitions:
 
 - Update feature metadata and/or re-open the feature spec for editing.
 
+### `lalph features pause <name>`
+
+- Persist `lifecycleStatus: "paused"` for the named feature.
+- Reuse the existing stored-feature not-found behavior.
+- Only allow `active -> paused`; do not reopen `draft`, `complete`, or
+  `cancelled` features through this shortcut.
+
+### `lalph features resume <name>`
+
+- Persist `lifecycleStatus: "active"` for the named feature.
+- Reuse the existing stored-feature not-found behavior.
+- Only allow `paused -> active`; do not reopen `draft`, `complete`, or
+  `cancelled` features through this shortcut.
+
 ## Execution Behavior
 
 ### Simple Issue Mode
@@ -442,6 +456,12 @@ state and supports both PR-mode and Ralph-mode features uniformly.
   execution mode, spec path, base branch, feature branch, and lifecycle status,
   persists updates through `FeatureStore.update(...)`, and can optionally
   reopen the feature spec in the configured editor after saving metadata.
+- Implementation note: `lalph features pause <name>` and `lalph features
+resume <name>` now provide dedicated manual lifecycle controls over stored
+  feature metadata. They reuse the same not-found error behavior as `show` /
+  `edit`, persist only `active -> paused` and `paused -> active`, and reject
+  attempts to reopen `draft`, `complete`, or `cancelled` features until a
+  broader lifecycle design exists.
 - Implementation note: the `lalph run` CLI surface now exists as a distinct
   command group with `run issues`, `run feature <name>`, and `run all`, and
   bare `lalph` now dispatches through the same `run all` entrypoint. The
@@ -566,6 +586,6 @@ state and supports both PR-mode and Ralph-mode features uniformly.
    - Command-level coverage now verifies PR-mode creation, Ralph-mode reopen,
      duplicate avoidance for already-integrating features, and persistence of
      stored final PR ids through both named-feature and global run paths.
-6. [ ] Resolve deferred UX follow-ups in later tasks.
-   - Add manual finalize/pause/resume controls if needed.
-   - Finalize `run all` scheduling policy.
+6. [ ] Resolve remaining deferred UX follow-ups.
+   - [x] Add dedicated manual pause/resume controls.
+   - [ ] Finalize `run all` scheduling policy.
