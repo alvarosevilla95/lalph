@@ -30,6 +30,14 @@ const makeIssue = (options: {
 
 const makeIssueSourceLayer = (
   ref: SubscriptionRef.SubscriptionRef<IssuesChange>,
+  options?: {
+    readonly createIssue?:
+      | ((
+          projectId: ProjectId,
+          issue: PrdIssue,
+        ) => Effect.Effect<{ id: string; url: string }>)
+      | undefined
+  },
 ) =>
   Layer.succeed(
     IssueSource,
@@ -44,7 +52,8 @@ const makeIssueSourceLayer = (
               change.issues.find((issue) => issue.id === issueId) ?? null,
           ),
         ),
-      createIssue: () => Effect.die("unexpected createIssue"),
+      createIssue:
+        options?.createIssue ?? (() => Effect.die("unexpected createIssue")),
       updateIssue: () => Effect.die("unexpected updateIssue"),
       cancelIssue: () => Effect.die("unexpected cancelIssue"),
       reset: Effect.die("unexpected reset"),
@@ -214,5 +223,99 @@ describe("issue source feature scoping", () => {
     assert.equal(result.scopedMiss, null)
     assert.equal(result.nextChangeTag, "External")
     assert.deepEqual(result.nextIssueIds, ["LIN-104"])
+  })
+
+  it("creates new tasks under the active feature parent and keeps them out of the top-level queue", async () => {
+    const upstreamRef = await Effect.runPromise(
+      SubscriptionRef.make<IssuesChange>(
+        IssuesChange.Internal({
+          issues: [
+            makeIssue({
+              id: "LIN-101",
+              title: "feature parent",
+            }),
+            makeIssue({
+              id: "LIN-102",
+              title: "existing child",
+              parentIssueSourceId: "LIN-101",
+            }),
+          ],
+        }),
+      ),
+    )
+
+    const createdIssues: Array<PrdIssue> = []
+    const upstreamLayer = makeIssueSourceLayer(upstreamRef, {
+      createIssue: (_projectId, issue) =>
+        Effect.gen(function* () {
+          createdIssues.push(issue)
+
+          const createdIssue = issue.update({ id: "LIN-103" })
+          yield* SubscriptionRef.update(upstreamRef, (change) =>
+            IssuesChange.Internal({
+              issues: [...change.issues, createdIssue],
+            }),
+          )
+
+          return {
+            id: "LIN-103",
+            url: "https://linear.app/example/LIN-103",
+          } as const
+        }),
+    })
+
+    const childLayer = scopeIssueSourceToParentIssueSourceId("LIN-101").pipe(
+      Layer.provide(upstreamLayer),
+    )
+    const topLevelLayer = scopeIssueSourceToTopLevelIssues().pipe(
+      Layer.provide(upstreamLayer),
+    )
+
+    const created = await Effect.runPromise(
+      Effect.scoped(
+        Effect.gen(function* () {
+          const source = yield* IssueSource
+          return yield* source.createIssue(
+            projectId,
+            new PrdIssue({
+              id: null,
+              title: "new child task",
+              description: "",
+              priority: 0,
+              estimate: null,
+              state: "todo",
+              blockedBy: [],
+              autoMerge: false,
+            }),
+          )
+        }).pipe(Effect.provide(childLayer)),
+      ),
+    )
+
+    const childIssueIds = await Effect.runPromise(
+      Effect.scoped(
+        Effect.gen(function* () {
+          const source = yield* IssueSource
+          const issues = yield* source.issues(projectId)
+          return issues.map((issue) => issue.id)
+        }).pipe(Effect.provide(childLayer)),
+      ),
+    )
+
+    const topLevelIssueIds = await Effect.runPromise(
+      Effect.scoped(
+        Effect.gen(function* () {
+          const source = yield* IssueSource
+          const issues = yield* source.issues(projectId)
+          return issues.map((issue) => issue.id)
+        }).pipe(Effect.provide(topLevelLayer)),
+      ),
+    )
+
+    assert.equal(created.id, "LIN-103")
+    assert.equal(createdIssues.length, 1)
+    assert.equal(createdIssues[0]?.parentIssueSourceId, "LIN-101")
+    assert.deepEqual(childIssueIds, ["LIN-102", "LIN-103"])
+    assert.deepEqual(topLevelIssueIds, ["LIN-101"])
   })
 })

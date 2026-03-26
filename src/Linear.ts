@@ -344,6 +344,18 @@ export const LinearIssueSource = Layer.effect(
         function* (projectId, issue) {
           const { teamId, labelId, autoMergeLabelId, project } =
             yield* Cache.get(projectSettings, projectId)
+          if (
+            issue.parentIssueSourceId &&
+            !identifierMap.has(issue.parentIssueSourceId)
+          ) {
+            yield* issues({
+              projectId: project.id,
+              teamId,
+              labelId,
+              autoMergeLabelId,
+            })
+          }
+
           const created = yield* linear.use((c) =>
             c.createIssue({
               teamId,
@@ -357,6 +369,9 @@ export const LinearIssueSource = Layer.effect(
               description: issue.description,
               priority: issue.priority,
               estimate: issue.estimate,
+              parentId: issue.parentIssueSourceId
+                ? (identifierMap.get(issue.parentIssueSourceId) ?? null)
+                : null,
               stateId: prdStateToLinearStateId(issue.state, teamId),
             }),
           )

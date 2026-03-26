@@ -108,11 +108,25 @@ const scopeIssueSource = (
 
 export const scopeIssueSourceToParentIssueSourceId = (
   parentIssueSourceId: string,
-) =>
-  scopeIssueSource(
+) => {
+  const scoped = scopeIssueSource(
     (issue) => issue.parentIssueSourceId === parentIssueSourceId,
     isChildOfParentIssueSourceId(parentIssueSourceId),
   )
+
+  return Layer.effect(
+    IssueSource,
+    Effect.gen(function* () {
+      const source = yield* IssueSource
+
+      return IssueSource.of({
+        ...source,
+        createIssue: (projectId, issue) =>
+          source.createIssue(projectId, issue.update({ parentIssueSourceId })),
+      })
+    }),
+  ).pipe(Layer.provide(scoped))
+}
 
 export const scopeIssueSourceToTopLevelIssues = () =>
   scopeIssueSource(
