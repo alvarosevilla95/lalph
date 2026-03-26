@@ -433,10 +433,6 @@ state and supports both PR-mode and Ralph-mode features uniformly.
   `/Users/alvaro/Developer/cloned/lalph/.specs/feature-driven-execution.md`,
   but this checkout only contains the local `.specs/feature-driven-execution.md`
   path; implementation tracking was updated here instead.
-- Implementation note: the initial `features ls` and `features show` CLI
-  surface reports persisted lifecycle status directly from local metadata for
-  now. Rich derived display states such as `blocked`, `ready`, and
-  `integrating` remain part of the later status-derivation step.
 - Implementation note: `lalph features create` now bootstraps the local
   feature metadata entry and spec file path, with duplicate-name protection.
   Git feature-branch creation and PR-mode parent issue creation remain deferred
@@ -481,6 +477,26 @@ state and supports both PR-mode and Ralph-mode features uniformly.
   parentless issue-source tasks. Both `lalph run issues` and the top-level
   project portion of `lalph run all` exclude feature child tasks so feature PR
   work is not double-run by the generic issue loop.
+- Implementation note: `lalph features ls` and `lalph features show <name>`
+  now resolve a derived display status instead of echoing persisted
+  `lifecycleStatus` directly. `features show` keeps the persisted lifecycle
+  field in the output separately for debugging mismatches between durable
+  metadata and reconciled runtime state.
+- Implementation note: final integration PR display state is currently derived
+  from `finalIntegrationPrId` values in the `github:<number>` format, using
+  GitHub CLI PR state lookup. Open final PRs display as `integrating`, merged
+  final PRs display as `complete`, and closed-unmerged PRs fall back to the
+  execution-source-derived state.
+- Implementation note: PR-mode feature display state is now derived from child
+  issue-source tasks under `parentIssueSourceId`: all-done child work resolves
+  to `ready`, runnable or in-flight work resolves to `active`, and incomplete
+  work with nothing runnable resolves to `blocked`.
+- Implementation note: Ralph-mode feature display state now reads the feature
+  spec's `## Implementation Plan` task list. Checked tasks (`[x]`) count as
+  complete, unchecked tasks (`[ ]`) keep the feature `active`, and explicit
+  blocked markers (`[-]`, `[~]`, `[!]`, or `[blocked]`) resolve to `blocked`
+  when no active tasks remain. Specs without tracked implementation-plan task
+  markers currently fall back to `active`.
 
 ## Implementation Plan
 
@@ -523,8 +539,16 @@ state and supports both PR-mode and Ralph-mode features uniformly.
      project execution, while `lalph run issues` remains limited to top-level
      parentless tasks.
 5. [ ] Add feature status derivation and integration PR automation.
-   - Compute derived display status from local + external state.
-   - Automatically create/open final integration PRs when features become ready.
+   - [x] Compute derived display status from local + external state.
+   - [ ] Automatically create/open final integration PRs when features become ready.
+   - `src/FeatureStatus.ts` now resolves derived display state for
+     `lalph features ls` / `show`, reconciling persisted lifecycle metadata
+     with final PR state plus PR-mode child-task state or Ralph spec task
+     state.
+   - Command-level coverage now verifies that `features ls` and
+     `features show <name>` report the derived display status, while resolver
+     tests cover `blocked`, `ready`, `integrating`, merged-PR `complete`, and
+     Ralph ready state.
 6. [ ] Resolve deferred UX follow-ups in later tasks.
    - Add manual finalize/pause/resume controls if needed.
    - Finalize `run all` scheduling policy.

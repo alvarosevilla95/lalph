@@ -18,6 +18,18 @@ export const FeatureLifecycleStatus = Schema.Literals([
 ])
 export type FeatureLifecycleStatus = typeof FeatureLifecycleStatus.Type
 
+export const FeatureDisplayStatus = Schema.Literals([
+  "draft",
+  "active",
+  "paused",
+  "blocked",
+  "ready",
+  "integrating",
+  "complete",
+  "cancelled",
+])
+export type FeatureDisplayStatus = typeof FeatureDisplayStatus.Type
+
 export class Feature extends Schema.Class<Feature>("lalph/Feature")({
   name: FeatureName,
   projectId: ProjectId,

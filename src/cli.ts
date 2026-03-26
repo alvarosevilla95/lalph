@@ -11,8 +11,10 @@ import { PlatformServices } from "./shared/platform.ts"
 import { FeatureStorageRoot, FeatureStore } from "./FeatureStore.ts"
 import { FeatureCreateWizard } from "./FeatureCreation.ts"
 import { FeatureEditWizard } from "./FeatureEditing.ts"
+import { FeatureFinalPrLookup, FeatureStatus } from "./FeatureStatus.ts"
 import { RunServiceLive } from "./RunServiceLive.ts"
 import { appCommand } from "./app.ts"
+import { CurrentIssueSource } from "./CurrentIssueSource.ts"
 
 appCommand.pipe(
   Command.provide(Settings.layer),
@@ -20,6 +22,9 @@ appCommand.pipe(
   Command.provide(FeatureEditWizard.layer),
   Command.provide(FeatureStorageRoot.layer),
   Command.provide(FeatureStore.layer),
+  Command.provide(FeatureStatus.layer),
+  Command.provide(FeatureFinalPrLookup.layer),
+  Command.provide(CurrentIssueSource.layer),
   Command.provide(RunServiceLive),
   Command.provide(TracingLayer),
   Command.provide(({ verbose }) => {

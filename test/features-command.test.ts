@@ -7,6 +7,7 @@ import { Effect, Option } from "effect"
 import { Command } from "effect/unstable/cli"
 import { FeatureCreateWizard } from "../src/FeatureCreation.ts"
 import { FeatureEditWizard } from "../src/FeatureEditing.ts"
+import { FeatureStatus } from "../src/FeatureStatus.ts"
 import {
   FeatureAlreadyExists,
   FeatureNotFound,
@@ -14,7 +15,11 @@ import {
   FeatureStore,
 } from "../src/FeatureStore.ts"
 import { commandFeatures } from "../src/commands/features.ts"
-import { Feature, FeatureName } from "../src/domain/Feature.ts"
+import {
+  Feature,
+  type FeatureDisplayStatus,
+  FeatureName,
+} from "../src/domain/Feature.ts"
 import { Project, ProjectId } from "../src/domain/Project.ts"
 import { PlatformServices } from "../src/shared/platform.ts"
 
@@ -72,12 +77,22 @@ const runFeaturesCommand = (
   options?: {
     readonly wizardInput?: Parameters<typeof FeatureCreateWizard.layerTest>[0]
     readonly editWizardInput?: Parameters<typeof FeatureEditWizard.layerTest>[0]
+    readonly featureStatuses?: Record<string, FeatureDisplayStatus>
   },
 ) => {
   let effect = Command.runWith(commandFeatures, { version: "test" })(args).pipe(
     Effect.provide(PlatformServices),
     Effect.provide(FeatureStorageRoot.layerAt(directory)),
     Effect.provide(FeatureStore.layerAt(directory)),
+    Effect.provide(
+      FeatureStatus.layerTest({
+        resolve: (feature) =>
+          Effect.succeed(
+            (options?.featureStatuses?.[String(feature.name)] ??
+              feature.lifecycleStatus) as FeatureDisplayStatus,
+          ),
+      }),
+    ),
   )
 
   effect = effect.pipe(
@@ -147,7 +162,14 @@ describe("features commands", () => {
     await seedFeatures(directory, [beta, alpha])
 
     const { output } = await captureConsoleLogs(() =>
-      Effect.runPromise(runFeaturesCommand(directory, ["ls"])),
+      Effect.runPromise(
+        runFeaturesCommand(directory, ["ls"], {
+          featureStatuses: {
+            alpha: "ready",
+            beta: "paused",
+          },
+        }),
+      ),
     )
 
     assert.match(output, /Feature: alpha/)
@@ -156,12 +178,12 @@ describe("features commands", () => {
     assert.match(output, /  Base branch: master/)
     assert.match(output, /  Feature branch: feature\/alpha/)
     assert.match(output, /  Spec file: \.specs\/alpha\.md/)
-    assert.match(output, /  Lifecycle status: active/)
+    assert.match(output, /  Status: ready/)
     assert.match(output, /Feature: beta/)
     assert.match(output, /  Project: project-beta/)
     assert.match(output, /  Execution mode: ralph/)
     assert.match(output, /  Base branch: develop/)
-    assert.match(output, /  Lifecycle status: paused/)
+    assert.match(output, /  Status: paused/)
     assert.ok(
       output.indexOf("Feature: alpha") < output.indexOf("Feature: beta"),
     )
@@ -179,7 +201,11 @@ describe("features commands", () => {
 
     const { output } = await captureConsoleLogs(() =>
       Effect.runPromise(
-        runFeaturesCommand(directory, ["show", "feature-inspect"]),
+        runFeaturesCommand(directory, ["show", "feature-inspect"], {
+          featureStatuses: {
+            "feature-inspect": "integrating",
+          },
+        }),
       ),
     )
 
@@ -189,7 +215,8 @@ describe("features commands", () => {
     assert.match(output, /  Spec file: \.specs\/feature-inspect\.md/)
     assert.match(output, /  Base branch: master/)
     assert.match(output, /  Feature branch: feature\/feature-inspect/)
-    assert.match(output, /  Lifecycle status: draft/)
+    assert.match(output, /  Display status: integrating/)
+    assert.match(output, /  Persisted lifecycle status: draft/)
     assert.match(output, /  Parent issue source ID: LIN-101/)
     assert.match(output, /  Final integration PR ID: github:42/)
   })

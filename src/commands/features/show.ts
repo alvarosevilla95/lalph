@@ -1,6 +1,7 @@
 import { Effect, Option } from "effect"
 import { Argument, Command } from "effect/unstable/cli"
 import { FeatureNotFound, FeatureStore } from "../../FeatureStore.ts"
+import { FeatureStatus } from "../../FeatureStatus.ts"
 import { FeatureName } from "../../domain/Feature.ts"
 
 export const commandFeaturesShow = Command.make("show", {
@@ -18,13 +19,18 @@ export const commandFeaturesShow = Command.make("show", {
         return yield* new FeatureNotFound({ name: featureName })
       }
 
+      const displayStatus = yield* FeatureStatus.resolve(feature.value)
+
       console.log(`Feature: ${feature.value.name}`)
       console.log(`  Project: ${feature.value.projectId}`)
       console.log(`  Execution mode: ${feature.value.executionMode}`)
       console.log(`  Spec file: ${feature.value.specFilePath}`)
       console.log(`  Base branch: ${feature.value.baseBranch}`)
       console.log(`  Feature branch: ${feature.value.featureBranch}`)
-      console.log(`  Lifecycle status: ${feature.value.lifecycleStatus}`)
+      console.log(`  Display status: ${displayStatus}`)
+      console.log(
+        `  Persisted lifecycle status: ${feature.value.lifecycleStatus}`,
+      )
       console.log(
         `  Parent issue source ID: ${feature.value.parentIssueSourceId ?? "None"}`,
       )
