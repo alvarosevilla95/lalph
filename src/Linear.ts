@@ -319,6 +319,7 @@ export const LinearIssueSource = Layer.effect(
                   estimate: issue.estimate ?? null,
                   state: linearStateToPrdState(issue.state, teamId),
                   blockedBy: issue.blockedBy.map((r) => r.issue.identifier),
+                  parentIssueSourceId: issue.parent?.identifier,
                   autoMerge: autoMergeLabelId.pipe(
                     Option.map((labelId) => issue.labelIds.includes(labelId)),
                     Option.getOrElse(() => false),
@@ -787,6 +788,9 @@ const issueQueryFields = `
   description
   priority
   estimate
+  parent {
+    identifier
+  }
   state {
     id
     name

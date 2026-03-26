@@ -8,7 +8,10 @@ import { Command } from "effect/unstable/cli"
 import { appCommand } from "../src/app.ts"
 import { FeatureStorageRoot, FeatureStore } from "../src/FeatureStore.ts"
 import { RunService } from "../src/RunService.ts"
-import { executeRunFeatureWith } from "../src/commands/root.ts"
+import {
+  executeRunFeatureWith,
+  FeatureParentIssueSourceIdMissing,
+} from "../src/commands/root.ts"
 import { Feature, FeatureName } from "../src/domain/Feature.ts"
 import { ProjectId } from "../src/domain/Project.ts"
 import { PlatformServices } from "../src/shared/platform.ts"
@@ -143,12 +146,14 @@ describe("run commands", () => {
     const calls: Array<string> = []
 
     await Effect.runPromise(
-      executeRunFeatureWith(({ feature, targetBranch }) =>
-        Effect.sync(() => {
-          calls.push(
-            `feature:${feature.name}:${feature.executionMode}:${Option.getOrUndefined(targetBranch)}`,
-          )
-        }),
+      executeRunFeatureWith(
+        () => Effect.die("unexpected run feature pr"),
+        ({ feature, targetBranch }) =>
+          Effect.sync(() => {
+            calls.push(
+              `feature:${feature.name}:${feature.executionMode}:${Option.getOrUndefined(targetBranch)}`,
+            )
+          }),
       )({
         feature,
         iterations: 2,
@@ -167,6 +172,74 @@ describe("run commands", () => {
     ])
   })
 
+  it("dispatches PR-mode features into the PR execution path with child scope metadata", async () => {
+    const directory = await makeTempDirectory()
+    const feature = new Feature({
+      ...makeFeature("feature-pr"),
+      parentIssueSourceId: "LIN-101",
+      featureBranch: "feature/pr-target",
+    })
+    const calls: Array<string> = []
+
+    await Effect.runPromise(
+      executeRunFeatureWith(
+        ({ feature, parentIssueSourceId, targetBranch }) =>
+          Effect.sync(() => {
+            calls.push(
+              `feature:${feature.name}:${feature.executionMode}:${parentIssueSourceId}:${Option.getOrUndefined(targetBranch)}`,
+            )
+          }),
+        () => Effect.die("unexpected run feature ralph"),
+      )({
+        feature,
+        iterations: 2,
+        maxIterationMinutes: 45,
+        maxContext: 1200,
+        stallMinutes: 7,
+        specsDirectory: "ignored-specs-directory",
+      }).pipe(
+        Effect.provide(PlatformServices),
+        Effect.provide(FeatureStorageRoot.layerAt(directory)),
+      ),
+    )
+
+    assert.deepEqual(calls, ["feature:feature-pr:pr:LIN-101:feature/pr-target"])
+  })
+
+  it("fails clearly when a PR-mode feature is missing its parent issue reference", async () => {
+    const directory = await makeTempDirectory()
+    const feature = new Feature({
+      ...makeFeature("feature-pr-missing-parent"),
+      parentIssueSourceId: undefined,
+    })
+
+    const exit = await Effect.runPromiseExit(
+      executeRunFeatureWith(
+        () => Effect.die("unexpected run feature pr"),
+        () => Effect.die("unexpected run feature ralph"),
+      )({
+        feature,
+        iterations: 2,
+        maxIterationMinutes: 45,
+        maxContext: 1200,
+        stallMinutes: 7,
+        specsDirectory: "ignored-specs-directory",
+      }).pipe(
+        Effect.provide(PlatformServices),
+        Effect.provide(FeatureStorageRoot.layerAt(directory)),
+      ),
+    )
+
+    assert.equal(exit._tag, "Failure")
+    assert.ok(
+      exit.cause.reasons[0]?.error instanceof FeatureParentIssueSourceIdMissing,
+    )
+    assert.equal(
+      exit.cause.reasons[0]?.error.message,
+      'Feature "feature-pr-missing-parent" is configured with executionMode="pr" but is missing "parentIssueSourceId". Update the feature metadata before running it.',
+    )
+  })
+
   it("resolves Ralph feature spec paths from stored feature metadata", async () => {
     const directory = await makeTempDirectory()
     const feature = new Feature({
@@ -178,10 +251,12 @@ describe("run commands", () => {
     const calls: Array<string> = []
 
     await Effect.runPromise(
-      executeRunFeatureWith(({ specFile, targetBranch }) =>
-        Effect.sync(() => {
-          calls.push(`${specFile}:${Option.getOrUndefined(targetBranch)}`)
-        }),
+      executeRunFeatureWith(
+        () => Effect.die("unexpected run feature pr"),
+        ({ specFile, targetBranch }) =>
+          Effect.sync(() => {
+            calls.push(`${specFile}:${Option.getOrUndefined(targetBranch)}`)
+          }),
       )({
         feature,
         iterations: 1,

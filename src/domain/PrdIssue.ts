@@ -49,6 +49,10 @@ export class PrdIssue extends Schema.Class<PrdIssue>("PrdIssue")({
       documentation: "An array of issue IDs that block this issue.",
     })
     .pipe(withEncodeDefault(() => [])),
+  parentIssueSourceId: Schema.optional(Schema.String).annotate({
+    description:
+      "Optional parent issue identifier used to scope feature-backed child tasks.",
+  }),
   autoMerge: Schema.Boolean.annotate({
     description:
       "Whether the issue should be auto-merged when complete. Read-only field",
@@ -112,6 +116,7 @@ export class PrdIssue extends Schema.Class<PrdIssue>("PrdIssue")({
     readonly description?: string | undefined
     readonly state?: PrdIssue["state"] | undefined
     readonly blockedBy?: ReadonlyArray<string> | undefined
+    readonly parentIssueSourceId?: string | undefined
   }): PrdIssue {
     return new PrdIssue({
       ...this,
@@ -120,6 +125,8 @@ export class PrdIssue extends Schema.Class<PrdIssue>("PrdIssue")({
       description: options.description ?? this.description,
       state: options.state ?? this.state,
       blockedBy: options.blockedBy ?? this.blockedBy,
+      parentIssueSourceId:
+        options.parentIssueSourceId ?? this.parentIssueSourceId,
     })
   }
 }

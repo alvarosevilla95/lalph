@@ -454,7 +454,20 @@ state and supports both PR-mode and Ralph-mode features uniformly.
 - Implementation note: `lalph run feature <name>` now routes
   `executionMode: "ralph"` features through the existing Ralph runner, using
   the stored feature `specFilePath` as the spec source and `featureBranch` as
-  the Ralph target branch. PR-mode feature execution remains deferred.
+  the Ralph target branch.
+- Implementation note: `lalph run feature <name>` now routes
+  `executionMode: "pr"` features through the issue-source runner, but only
+  after verifying that the stored feature includes `parentIssueSourceId`.
+  Feature-scoped PR runs filter issue-source reads and task selection down to
+  child tasks whose `parentIssueSourceId` matches the feature parent, and both
+  worktree setup and child PR targeting now use the feature's `featureBranch`
+  instead of the project base branch.
+- Implementation issue discovered: feature-scoped PR execution now scopes
+  existing child-task reads correctly, but follow-up child-task creation still
+  uses the generic `IssueSource.createIssue(...)` API and therefore does not
+  yet force new tasks under the feature parent. That parent-aware task creation
+  path should be added in a later follow-up if feature runs are expected to
+  spawn additional issue-source tasks.
 - Implementation note: feature-scoped Ralph completion must not disable the
   owning project. Project-scoped Ralph runs still disable the project when the
   Ralph spec is exhausted, but named feature runs stop after the feature is
@@ -487,11 +500,16 @@ state and supports both PR-mode and Ralph-mode features uniformly.
      `run feature <name>`, and `run all` against a shared run-service boundary.
 4. [ ] Integrate feature-aware execution behavior.
    - Preserve simple issue execution.
-   - [ ] Add PR-mode feature execution against issue-source child tasks.
+   - [x] Add PR-mode feature execution against issue-source child tasks.
    - [x] Add Ralph-mode feature execution against the spec file and feature branch.
    - `lalph run feature <name>` now dispatches stored Ralph-mode features into
      the existing Ralph execution loop with resolved spec-file paths and the
      stored feature branch as the run target.
+   - `lalph run feature <name>` now also dispatches stored PR-mode features
+     into the issue-source execution loop, fails clearly when the feature is
+     missing `parentIssueSourceId`, scopes task resolution to child tasks under
+     that parent, and targets the feature branch for worktree setup and child
+     PR creation.
 5. [ ] Add feature status derivation and integration PR automation.
    - Compute derived display status from local + external state.
    - Automatically create/open final integration PRs when features become ready.

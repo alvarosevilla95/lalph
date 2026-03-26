@@ -17,11 +17,10 @@ import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process"
 import type { AnyCliAgent } from "./domain/CliAgent.ts"
 import { constWorkerMaxOutputChunks, CurrentWorkerState } from "./Workers.ts"
 import { AtomRegistry } from "effect/unstable/reactivity"
-import { CurrentProjectId } from "./Settings.ts"
-import { projectById } from "./Projects.ts"
 import { parseBranch } from "./shared/git.ts"
 import { resolveLalphDirectory } from "./shared/lalphDirectory.ts"
 import { withStallTimeout } from "./shared/stream.ts"
+import { resolveRunTargetBranch, RunTargetBranch } from "./RunTargetBranch.ts"
 
 export class Worktree extends ServiceMap.Service<Worktree>()("lalph/Worktree", {
   make: Effect.gen(function* () {
@@ -84,7 +83,9 @@ export class Worktree extends ServiceMap.Service<Worktree>()("lalph/Worktree", {
     } as const
   }).pipe(Effect.withSpan("Worktree.build")),
 }) {
-  static layer = Layer.effect(this, this.make)
+  static layer = Layer.effect(this, this.make).pipe(
+    Layer.provide(RunTargetBranch.layerDefault),
+  )
   static layerLocal = Layer.effect(
     this,
     Effect.gen(function* () {
@@ -97,7 +98,7 @@ export class Worktree extends ServiceMap.Service<Worktree>()("lalph/Worktree", {
         ...(yield* makeExecHelpers({ directory })),
       } as const
     }),
-  )
+  ).pipe(Layer.provide(RunTargetBranch.layerDefault))
 }
 
 const execIgnore = (
@@ -132,7 +133,7 @@ const setupWorktree = Effect.fnUntraced(function* (options: {
   const spawner = yield* ChildProcessSpawner.ChildProcessSpawner
   const fs = yield* FileSystem.FileSystem
   const pathService = yield* Path.Path
-  const targetBranch = yield* getTargetBranch
+  const targetBranch = yield* getTargetBranch()
 
   if (Option.isSome(targetBranch)) {
     const parsed = parseBranch(targetBranch.value)
@@ -189,14 +190,7 @@ const copySharedBack = Effect.fnUntraced(function* (options: {
   yield* fs.copy(options.worktreeShared, options.shared)
 })
 
-const getTargetBranch = Effect.gen(function* () {
-  const projectId = yield* CurrentProjectId
-  const project = yield* projectById(projectId)
-  if (Option.isNone(project)) {
-    return Option.none<string>()
-  }
-  return project.value.targetBranch
-})
+const getTargetBranch = resolveRunTargetBranch
 
 const setupScriptTemplate = `#!/usr/bin/env bash
 set -euo pipefail

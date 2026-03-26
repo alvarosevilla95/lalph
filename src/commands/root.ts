@@ -44,6 +44,7 @@ import {
   GitFlowError,
   GitFlowPR,
   GitFlowRalph,
+  type GitFlowLayer,
 } from "../GitFlow.ts"
 import {
   getAllProjects,
@@ -66,6 +67,8 @@ import { CurrentTask } from "../domain/CurrentTask.ts"
 import { RunService } from "../RunService.ts"
 import type { RunFeatureOptions } from "../RunService.ts"
 import { FeatureStorageRoot } from "../FeatureStore.ts"
+import { scopeIssueSourceToParentIssueSourceId } from "../IssueSourceScope.ts"
+import { RunTargetBranch } from "../RunTargetBranch.ts"
 import {
   runCommandFlags,
   specsDirectory,
@@ -571,13 +574,13 @@ const executeRalphIterations = Effect.fnUntraced(function* (options: {
       Effect.provide(GitFlowRalph, { local: true }),
       withWorkerState(options.project.id),
       Effect.catchTags({
-        ChosenTaskNotFound(_error) {
+        ChosenTaskNotFound(_error: ChosenTaskNotFound) {
           ralphDone = true
           return Effect.log(
             `No more work to process for Ralph, ending after ${currentIteration + 1} iteration(s).`,
           )
         },
-        QuitError(_error) {
+        QuitError(_error: QuitError) {
           quit = true
           return Effect.void
         },
@@ -607,14 +610,23 @@ class RalphSpecMissing extends Data.TaggedError("RalphSpecMissing")<{
   readonly message = `Project "${this.projectId}" is configured with gitFlow="ralph" but is missing "ralphSpec". Run 'lalph projects edit' and set "Path to Ralph spec file".`
 }
 
-const runProject = Effect.fnUntraced(
+export class FeatureParentIssueSourceIdMissing extends Data.TaggedError(
+  "FeatureParentIssueSourceIdMissing",
+)<{
+  readonly featureName: string
+}> {
+  readonly message = `Feature "${this.featureName}" is configured with executionMode="pr" but is missing "parentIssueSourceId". Update the feature metadata before running it.`
+}
+
+const executeIssueIterations = Effect.fnUntraced(
   function* (options: {
     readonly iterations: number
     readonly project: Project
     readonly specsDirectory: string
     readonly stallTimeout: Duration.Duration
     readonly runTimeout: Duration.Duration
-    readonly maxContext: number | undefined
+    readonly targetBranch: Option.Option<string>
+    readonly gitFlowLayer: GitFlowLayer
   }) {
     const isFinite = Number.isFinite(options.iterations)
     const iterationsDisplay = isFinite ? options.iterations : "unlimited"
@@ -623,42 +635,16 @@ const runProject = Effect.fnUntraced(
     const source = yield* IssueSource
     const issuesRef = yield* source.ref(options.project.id)
 
-    if (options.project.gitFlow === "ralph") {
-      if (!options.project.ralphSpec) {
-        return yield* new RalphSpecMissing({
-          projectId: options.project.id,
-        })
-      }
-      return yield* executeRalphIterations({
-        iterations: options.iterations,
-        project: options.project,
-        stallTimeout: options.stallTimeout,
-        runTimeout: options.runTimeout,
-        maxContext: options.maxContext,
-        targetBranch: options.project.targetBranch,
-        specFile: options.project.ralphSpec,
-        disableProjectOnComplete: true,
-      })
-    }
-
-    const resolveGitFlowLayer = () => {
-      if (options.project.gitFlow === "commit") {
-        return GitFlowCommit
-      }
-      return GitFlowPR
-    }
-
-    const resolveRunEffect = (startedDeferred: Deferred.Deferred<void>) => {
-      return run({
+    const resolveRunEffect = (startedDeferred: Deferred.Deferred<void>) =>
+      run({
         startedDeferred,
-        targetBranch: options.project.targetBranch,
+        targetBranch: options.targetBranch,
         specsDirectory: options.specsDirectory,
         stallTimeout: options.stallTimeout,
         runTimeout: options.runTimeout,
         review: options.project.reviewAgent,
         research: options.project.researchAgent,
       })
-    }
 
     yield* resetInProgress.pipe(Effect.withSpan("Main.resetInProgress"))
 
@@ -666,7 +652,6 @@ const runProject = Effect.fnUntraced(
       `Executing ${iterationsDisplay} iteration(s) with concurrency ${options.project.concurrency}`,
     )
 
-    let iterations = options.iterations
     let iteration = 0
     let quit = false
 
@@ -697,22 +682,21 @@ const runProject = Effect.fnUntraced(
 
     while (true) {
       yield* semaphore.take(1)
-      if (quit || (isFinite && iteration >= iterations)) {
+      if (quit || (isFinite && iteration >= options.iterations)) {
         break
       }
 
       const startedDeferred = yield* Deferred.make<void>()
 
-      const gitFlowLayer = resolveGitFlowLayer()
       yield* waitForWork.pipe(
         Effect.andThen(
           resolveRunEffect(startedDeferred).pipe(
-            Effect.provide(gitFlowLayer, { local: true }),
+            Effect.provide(options.gitFlowLayer, { local: true }),
             withWorkerState(options.project.id),
           ),
         ),
         Effect.catchTags({
-          QuitError(_error) {
+          QuitError(_error: QuitError) {
             quit = true
             return Effect.void
           },
@@ -739,6 +723,49 @@ const runProject = Effect.fnUntraced(
       project: options.project.id,
     }),
 )
+
+const runProject = Effect.fnUntraced(function* (options: {
+  readonly iterations: number
+  readonly project: Project
+  readonly specsDirectory: string
+  readonly stallTimeout: Duration.Duration
+  readonly runTimeout: Duration.Duration
+  readonly maxContext: number | undefined
+}) {
+  if (options.project.gitFlow === "ralph") {
+    if (!options.project.ralphSpec) {
+      return yield* new RalphSpecMissing({
+        projectId: options.project.id,
+      })
+    }
+    return yield* executeRalphIterations({
+      iterations: options.iterations,
+      project: options.project,
+      stallTimeout: options.stallTimeout,
+      runTimeout: options.runTimeout,
+      maxContext: options.maxContext,
+      targetBranch: options.project.targetBranch,
+      specFile: options.project.ralphSpec,
+      disableProjectOnComplete: true,
+    })
+  }
+
+  const resolveGitFlowLayer = () => {
+    if (options.project.gitFlow === "commit") {
+      return GitFlowCommit
+    }
+    return GitFlowPR
+  }
+  yield* executeIssueIterations({
+    iterations: options.iterations,
+    project: options.project,
+    specsDirectory: options.specsDirectory,
+    stallTimeout: options.stallTimeout,
+    runTimeout: options.runTimeout,
+    targetBranch: options.project.targetBranch,
+    gitFlowLayer: resolveGitFlowLayer(),
+  })
+})
 
 // Command
 
@@ -787,6 +814,7 @@ export const executeRunAll = Effect.fnUntraced(
     CurrentIssueSource.layer,
     AtomRegistry.layer,
     Reactivity.layer,
+    RunTargetBranch.layerDefault,
   ]),
 )
 
@@ -828,7 +856,10 @@ export const executeRunFeatureRalph = Effect.fnUntraced(
       targetBranch: options.targetBranch,
       specFile: options.specFile,
       disableProjectOnComplete: false,
-    }).pipe(Effect.provideService(CurrentProjectId, options.feature.projectId))
+    }).pipe(
+      Effect.provideService(CurrentProjectId, options.feature.projectId),
+      Effect.provide(RunTargetBranch.layerFor(options.feature.featureBranch)),
+    )
   },
   Effect.scoped,
   Effect.provide([
@@ -839,10 +870,62 @@ export const executeRunFeatureRalph = Effect.fnUntraced(
     CurrentIssueSource.layer,
     AtomRegistry.layer,
     Reactivity.layer,
+    RunTargetBranch.layerDefault,
+  ]),
+)
+
+export const executeRunFeaturePr = Effect.fnUntraced(
+  function* (
+    options: RunFeatureOptions & {
+      readonly targetBranch: Option.Option<string>
+      readonly parentIssueSourceId: string
+    },
+  ) {
+    const project = yield* projectById(options.feature.projectId)
+    if (Option.isNone(project)) {
+      return yield* new ProjectNotFound({
+        projectId: options.feature.projectId,
+      })
+    }
+
+    const scopedIssueSource = scopeIssueSourceToParentIssueSourceId(
+      options.parentIssueSourceId,
+    )
+
+    yield* executeIssueIterations({
+      iterations: options.iterations,
+      project: project.value,
+      specsDirectory: options.specsDirectory,
+      stallTimeout: Duration.minutes(options.stallMinutes),
+      runTimeout: Duration.minutes(options.maxIterationMinutes),
+      targetBranch: options.targetBranch,
+      gitFlowLayer: GitFlowPR,
+    }).pipe(
+      Effect.provideService(CurrentProjectId, options.feature.projectId),
+      Effect.provide(scopedIssueSource),
+      Effect.provide(RunTargetBranch.layerFor(options.feature.featureBranch)),
+    )
+  },
+  Effect.scoped,
+  Effect.provide([
+    ClankaMuxerLayer,
+    PromptGen.layer,
+    GithubCli.layer,
+    Settings.layer,
+    CurrentIssueSource.layer,
+    AtomRegistry.layer,
+    Reactivity.layer,
+    RunTargetBranch.layerDefault,
   ]),
 )
 
 export const executeRunFeatureWith = <E, R>(
+  executePrFeature: (
+    options: RunFeatureOptions & {
+      readonly targetBranch: Option.Option<string>
+      readonly parentIssueSourceId: string
+    },
+  ) => Effect.Effect<void, E, R>,
   executeRalphFeature: (
     options: RunFeatureOptions & {
       readonly specFile: string
@@ -852,7 +935,11 @@ export const executeRunFeatureWith = <E, R>(
 ) =>
   Effect.fnUntraced(function* (
     options: RunFeatureOptions,
-  ): Effect.fn.Return<void, E, R | FeatureStorageRoot | Path.Path> {
+  ): Effect.fn.Return<
+    void,
+    E | FeatureParentIssueSourceIdMissing,
+    R | FeatureStorageRoot | Path.Path
+  > {
     if (options.feature.executionMode === "ralph") {
       const specFile = yield* resolveFeatureSpecFilePath(options)
       return yield* executeRalphFeature({
@@ -862,12 +949,23 @@ export const executeRunFeatureWith = <E, R>(
       })
     }
 
-    return yield* Effect.log(
-      `Feature "${options.feature.name}" resolved for ${options.feature.executionMode}-mode execution. Feature-aware run orchestration is implemented in a later step of the spec.`,
-    )
+    if (!options.feature.parentIssueSourceId) {
+      return yield* new FeatureParentIssueSourceIdMissing({
+        featureName: options.feature.name,
+      })
+    }
+
+    return yield* executePrFeature({
+      ...options,
+      parentIssueSourceId: options.feature.parentIssueSourceId,
+      targetBranch: Option.some(options.feature.featureBranch),
+    })
   })
 
-export const executeRunFeature = executeRunFeatureWith(executeRunFeatureRalph)
+export const executeRunFeature = executeRunFeatureWith(
+  executeRunFeaturePr,
+  executeRunFeatureRalph,
+)
 
 export const commandRoot = Command.make("lalph", runCommandFlags).pipe(
   Command.withSharedFlags({

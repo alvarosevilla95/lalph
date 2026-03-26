@@ -45,6 +45,11 @@ export class IssuesNode extends S.Class<IssuesNode>("IssuesNode")({
   estimate: S.NullOr(S.Number),
   state: State,
   labelIds: S.Array(S.String),
+  parent: S.NullOr(
+    S.Struct({
+      identifier: S.String,
+    }),
+  ),
   inverseRelations: InverseRelations,
   completedAt: S.NullOr(S.DateTimeUtc),
 }) {

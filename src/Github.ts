@@ -402,6 +402,10 @@ export const GithubIssueSource = Layer.effect(
         Stream.mapEffect(
           Effect.fnUntraced(function* (issue) {
             const id = `#${issue.number}`
+            const parentIssueSourceId =
+              "parent" in issue && issue.parent
+                ? `#${issue.parent.number}`
+                : yield* getParentIssueSourceId(issue.number)
             const dependencies = yield* listOpenBlockedBy(issue.number).pipe(
               Stream.runCollect,
             )
@@ -429,6 +433,7 @@ export const GithubIssueSource = Layer.effect(
               estimate: null,
               state,
               blockedBy: dependencies.map((dep) => `#${dep.number}`),
+              parentIssueSourceId,
               autoMerge: options.autoMergeLabelName.pipe(
                 Option.map((labelName) => hasLabel(issue.labels, labelName)),
                 Option.getOrElse(() => false),
@@ -444,6 +449,23 @@ export const GithubIssueSource = Layer.effect(
 
     const createIssue = github.wrap((rest) => rest.issues.create)
     const updateIssue = github.wrap((rest) => rest.issues.update)
+
+    const getParentIssueSourceId = Effect.fnUntraced(function* (
+      issueNumber: number,
+    ) {
+      const data = yield* github.graphql<GithubIssueParentQuery>(
+        githubIssueParentQuery,
+        {
+          owner: cli.owner,
+          repo: cli.repo,
+          issueNumber,
+        },
+      )
+
+      return data.repository?.issue?.parent
+        ? `#${data.repository.issue.parent.number}`
+        : undefined
+    })
 
     const addBlockedByDependency = Effect.fnUntraced(function* (options: {
       readonly issueNumber: number
@@ -857,6 +879,9 @@ type GithubProjectsQuery = {
 type GithubProjectIssue = {
   readonly __typename: "Issue"
   readonly number: number
+  readonly parent: {
+    readonly number: number
+  } | null
   readonly repository: {
     readonly nameWithOwner: string
   }
@@ -890,6 +915,16 @@ type GithubProjectItemsQuery = {
       }
     }
   }
+}
+
+type GithubIssueParentQuery = {
+  readonly repository: {
+    readonly issue: {
+      readonly parent: {
+        readonly number: number
+      } | null
+    } | null
+  } | null
 }
 
 // == helpers
@@ -929,6 +964,9 @@ query GithubProjectItems($projectId: ID!, $after: String) {
             __typename
             ... on Issue {
               number
+              parent {
+                number
+              }
               repository {
                 nameWithOwner
               }
@@ -948,6 +986,18 @@ query GithubProjectItems($projectId: ID!, $after: String) {
           endCursor
           hasNextPage
         }
+      }
+    }
+  }
+}
+`
+
+const githubIssueParentQuery = `
+query GithubIssueParent($owner: String!, $repo: String!, $issueNumber: Int!) {
+  repository(owner: $owner, name: $repo) {
+    issue(number: $issueNumber) {
+      parent {
+        number
       }
     }
   }
