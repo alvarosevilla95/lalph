@@ -6,6 +6,7 @@ import { after, describe, it } from "node:test"
 import { Effect, Option } from "effect"
 import { Command } from "effect/unstable/cli"
 import { FeatureCreateWizard } from "../src/FeatureCreation.ts"
+import { FeatureEditWizard } from "../src/FeatureEditing.ts"
 import {
   FeatureAlreadyExists,
   FeatureNotFound,
@@ -70,6 +71,7 @@ const runFeaturesCommand = (
   args: ReadonlyArray<string>,
   options?: {
     readonly wizardInput?: Parameters<typeof FeatureCreateWizard.layerTest>[0]
+    readonly editWizardInput?: Parameters<typeof FeatureEditWizard.layerTest>[0]
   },
 ) => {
   let effect = Command.runWith(commandFeatures, { version: "test" })(args).pipe(
@@ -78,11 +80,18 @@ const runFeaturesCommand = (
     Effect.provide(FeatureStore.layerAt(directory)),
   )
 
-  if (options?.wizardInput) {
-    effect = effect.pipe(
-      Effect.provide(FeatureCreateWizard.layerTest(options.wizardInput)),
-    )
-  }
+  effect = effect.pipe(
+    Effect.provide(
+      options?.wizardInput
+        ? FeatureCreateWizard.layerTest(options.wizardInput)
+        : FeatureCreateWizard.layer,
+    ),
+    Effect.provide(
+      options?.editWizardInput
+        ? FeatureEditWizard.layerTest(options.editWizardInput)
+        : FeatureEditWizard.layer,
+    ),
+  )
 
   return effect
 }
@@ -198,6 +207,114 @@ describe("features commands", () => {
       exit.cause.reasons[0]?.error.message,
       'Feature "missing-feature" was not found.',
     )
+  })
+
+  it("updates feature metadata successfully through features edit", async () => {
+    const directory = await makeTempDirectory()
+    const feature = makeFeature("feature-edit", {
+      executionMode: "pr",
+      specFilePath: ".specs/feature-edit.md",
+      baseBranch: "master",
+      featureBranch: "feature/feature-edit",
+      lifecycleStatus: "active",
+      parentIssueSourceId: "LIN-202",
+    })
+
+    await seedFeatures(directory, [feature])
+
+    const { output } = await captureConsoleLogs(() =>
+      Effect.runPromise(
+        runFeaturesCommand(directory, ["edit", "feature-edit"], {
+          editWizardInput: {
+            executionMode: "ralph",
+            specFilePath: ".specs/feature-edit-updated.md",
+            baseBranch: "develop",
+            featureBranch: "feature/feature-edit-v2",
+            lifecycleStatus: "paused",
+            openSpecFile: false,
+          },
+        }),
+      ),
+    )
+
+    assert.match(output, /Updated feature: feature-edit/)
+    assert.match(output, /  Execution mode: ralph/)
+    assert.match(output, /  Base branch: develop/)
+    assert.match(output, /  Feature branch: feature\/feature-edit-v2/)
+    assert.match(output, /  Spec file: \.specs\/feature-edit-updated\.md/)
+    assert.match(output, /  Lifecycle status: paused/)
+
+    const storedFeature = Feature.decodeSync(
+      await readFile(
+        path.join(directory, ".lalph", "features", "feature-edit.json"),
+        "utf8",
+      ),
+    )
+    assert.deepEqual(
+      storedFeature,
+      new Feature({
+        name: FeatureName.makeUnsafe("feature-edit"),
+        projectId: ProjectId.makeUnsafe("project-alpha"),
+        executionMode: "ralph",
+        specFilePath: ".specs/feature-edit-updated.md",
+        baseBranch: "develop",
+        featureBranch: "feature/feature-edit-v2",
+        lifecycleStatus: "paused",
+        parentIssueSourceId: "LIN-202",
+      }),
+    )
+  })
+
+  it("fails clearly for unknown feature names in features edit", async () => {
+    const directory = await makeTempDirectory()
+
+    const exit = await Effect.runPromiseExit(
+      runFeaturesCommand(directory, ["edit", "missing-feature"]),
+    )
+
+    assert.equal(exit._tag, "Failure")
+    assert.ok(exit.cause.reasons[0]?.error instanceof FeatureNotFound)
+    assert.equal(
+      exit.cause.reasons[0]?.error.message,
+      'Feature "missing-feature" was not found.',
+    )
+  })
+
+  it("persists only the changed metadata when editing a feature", async () => {
+    const directory = await makeTempDirectory()
+    const feature = makeFeature("feature-persist", {
+      finalIntegrationPrId: "github:77",
+      lifecycleStatus: "draft",
+    })
+
+    await seedFeatures(directory, [feature])
+
+    await captureConsoleLogs(() =>
+      Effect.runPromise(
+        runFeaturesCommand(directory, ["edit", "feature-persist"], {
+          editWizardInput: {
+            executionMode: "pr",
+            specFilePath: ".specs/feature-persist.md",
+            baseBranch: "release",
+            featureBranch: "feature/feature-persist",
+            lifecycleStatus: "complete",
+            openSpecFile: false,
+          },
+        }),
+      ),
+    )
+
+    const persistedFeature = Feature.decodeSync(
+      await readFile(
+        path.join(directory, ".lalph", "features", "feature-persist.json"),
+        "utf8",
+      ),
+    )
+
+    assert.equal(persistedFeature.baseBranch, "release")
+    assert.equal(persistedFeature.lifecycleStatus, "complete")
+    assert.equal(persistedFeature.executionMode, "pr")
+    assert.equal(persistedFeature.finalIntegrationPrId, "github:77")
   })
 
   it("creates a feature and bootstraps its spec file", async () => {

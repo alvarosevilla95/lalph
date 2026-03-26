@@ -441,6 +441,10 @@ state and supports both PR-mode and Ralph-mode features uniformly.
   feature metadata entry and spec file path, with duplicate-name protection.
   Git feature-branch creation and PR-mode parent issue creation remain deferred
   to the later execution/integration work in this spec.
+- Implementation note: `lalph features edit <name>` now re-prompts the stored
+  execution mode, spec path, base branch, feature branch, and lifecycle status,
+  persists updates through `FeatureStore.update(...)`, and can optionally
+  reopen the feature spec in the configured editor after saving metadata.
 
 ## Implementation Plan
 
@@ -450,7 +454,7 @@ state and supports both PR-mode and Ralph-mode features uniformly.
      Ralph modes.
    - Completed with a first-pass `Feature` model, file-per-feature persistence,
      and focused persistence tests.
-2. [ ] Add `lalph features` CLI commands.
+2. [x] Add `lalph features` CLI commands.
    - Implement `create`, `ls`, `show`, and `edit`.
    - Build the guided feature creation wizard.
    - Initial inspection support is now in place via `lalph features ls` and
@@ -459,7 +463,9 @@ state and supports both PR-mode and Ralph-mode features uniformly.
    - `lalph features create` now guides users through project, execution mode,
      feature name, branches, and spec source/path, then persists the feature
      and bootstraps a new spec file when requested.
-   - `lalph features edit <name>` remains pending.
+   - `lalph features edit <name>` now updates stored feature metadata through a
+     dedicated edit wizard, preserves non-edited durable references, and can
+     optionally reopen the feature spec file in the user's editor.
 3. [ ] Add `lalph run` command variants.
    - Implement `run issues`, `run feature <name>`, and `run all`.
    - Make bare `lalph` default to `run all`.

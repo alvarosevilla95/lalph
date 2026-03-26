@@ -19,6 +19,7 @@ import { commandAgents } from "./commands/agents.ts"
 import { commandFeatures } from "./commands/features.ts"
 import { FeatureStorageRoot, FeatureStore } from "./FeatureStore.ts"
 import { FeatureCreateWizard } from "./FeatureCreation.ts"
+import { FeatureEditWizard } from "./FeatureEditing.ts"
 
 commandRoot.pipe(
   Command.withSubcommands([
@@ -33,6 +34,7 @@ commandRoot.pipe(
   ]),
   Command.provide(Settings.layer),
   Command.provide(FeatureCreateWizard.layer),
+  Command.provide(FeatureEditWizard.layer),
   Command.provide(FeatureStorageRoot.layer),
   Command.provide(FeatureStore.layer),
   Command.provide(TracingLayer),
