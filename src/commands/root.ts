@@ -45,7 +45,12 @@ import {
   GitFlowPR,
   GitFlowRalph,
 } from "../GitFlow.ts"
-import { getAllProjects, welcomeWizard } from "../Projects.ts"
+import {
+  getAllProjects,
+  projectById,
+  ProjectNotFound,
+  welcomeWizard,
+} from "../Projects.ts"
 import type { Project } from "../domain/Project.ts"
 import { getDefaultCliAgentPreset } from "../Presets.ts"
 import type { QuitError } from "effect/Terminal"
@@ -59,13 +64,14 @@ import { agentResearcher } from "../Agents/researcher.ts"
 import { agentChooserRalph } from "../Agents/chooserRalph.ts"
 import { CurrentTask } from "../domain/CurrentTask.ts"
 import { RunService } from "../RunService.ts"
+import type { RunFeatureOptions } from "../RunService.ts"
+import { FeatureStorageRoot } from "../FeatureStore.ts"
 import {
   runCommandFlags,
   specsDirectory,
   verbose,
   type RunCommandOptions,
 } from "./run/options.ts"
-
 // Main iteration run logic
 
 const run = Effect.fnUntraced(
@@ -347,6 +353,7 @@ const runRalph = Effect.fnUntraced(
     readonly review: boolean
     readonly specFile: string
     readonly maxContext: number | undefined
+    readonly disableProjectOnComplete: boolean
   }): Effect.fn.Return<
     void,
     | PlatformError.PlatformError
@@ -411,17 +418,19 @@ const runRalph = Effect.fnUntraced(
     }).pipe(
       Effect.tapErrorTag(
         "ChosenTaskNotFound",
-        Effect.fnUntraced(function* () {
-          // Disable project when all tasks are done
-          yield* Settings.update(
-            allProjects,
-            Option.map((projects) =>
-              projects.map((p) =>
-                p.id === projectId ? p.update({ enabled: false }) : p,
-              ),
-            ),
-          )
-        }),
+        options.disableProjectOnComplete
+          ? Effect.fnUntraced(function* () {
+              // Disable project when all tasks are done.
+              yield* Settings.update(
+                allProjects,
+                Option.map((projects) =>
+                  projects.map((p) =>
+                    p.id === projectId ? p.update({ enabled: false }) : p,
+                  ),
+                ),
+              )
+            })
+          : () => Effect.void,
       ),
       Effect.withSpan("Main.chooser"),
     )
@@ -515,21 +524,88 @@ const runRalph = Effect.fnUntraced(
   ),
 )
 
+const executeRalphIterations = Effect.fnUntraced(function* (options: {
+  readonly iterations: number
+  readonly project: Project
+  readonly stallTimeout: Duration.Duration
+  readonly runTimeout: Duration.Duration
+  readonly maxContext: number | undefined
+  readonly targetBranch: Option.Option<string>
+  readonly specFile: string
+  readonly disableProjectOnComplete: boolean
+}) {
+  const isFinite = Number.isFinite(options.iterations)
+  const iterationsDisplay = isFinite ? options.iterations : "unlimited"
+  const semaphore = Semaphore.makeUnsafe(options.project.concurrency)
+  const fibers = yield* FiberSet.make()
+
+  yield* Effect.log(
+    `Executing ${iterationsDisplay} iteration(s) with concurrency ${options.project.concurrency}`,
+  )
+
+  let iteration = 0
+  let quit = false
+
+  yield* Atom.mount(activeWorkerLoggingAtom)
+
+  while (true) {
+    yield* semaphore.take(1)
+    if (quit || (isFinite && iteration >= options.iterations)) {
+      break
+    }
+
+    const currentIteration = iteration
+    const startedDeferred = yield* Deferred.make<void>()
+    let ralphDone = false
+
+    const fiber = yield* runRalph({
+      targetBranch: options.targetBranch,
+      stallTimeout: options.stallTimeout,
+      runTimeout: options.runTimeout,
+      review: options.project.reviewAgent,
+      research: options.project.researchAgent,
+      specFile: options.specFile,
+      maxContext: options.maxContext,
+      disableProjectOnComplete: options.disableProjectOnComplete,
+    }).pipe(
+      Effect.provide(GitFlowRalph, { local: true }),
+      withWorkerState(options.project.id),
+      Effect.catchTags({
+        ChosenTaskNotFound(_error) {
+          ralphDone = true
+          return Effect.log(
+            `No more work to process for Ralph, ending after ${currentIteration + 1} iteration(s).`,
+          )
+        },
+        QuitError(_error) {
+          quit = true
+          return Effect.void
+        },
+      }),
+      Effect.catchCause((cause) =>
+        Effect.logWarning(cause).pipe(
+          Effect.andThen(Effect.sleep(Duration.seconds(10))),
+        ),
+      ),
+      Effect.ensuring(semaphore.release(1)),
+      Effect.ensuring(Deferred.completeWith(startedDeferred, Effect.void)),
+      FiberSet.run(fibers),
+    )
+
+    yield* Fiber.await(fiber)
+    if (ralphDone) break
+
+    iteration++
+  }
+
+  yield* FiberSet.awaitEmpty(fibers)
+})
+
 class RalphSpecMissing extends Data.TaggedError("RalphSpecMissing")<{
   readonly projectId: Project["id"]
 }> {
   readonly message = `Project "${this.projectId}" is configured with gitFlow="ralph" but is missing "ralphSpec". Run 'lalph projects edit' and set "Path to Ralph spec file".`
 }
-
-type ProjectExecutionMode =
-  | {
-      readonly _tag: "standard"
-      readonly gitFlow: "pr" | "commit"
-    }
-  | {
-      readonly _tag: "ralph"
-      readonly specFile: string
-    }
 
 const runProject = Effect.fnUntraced(
   function* (options: {
@@ -547,46 +623,32 @@ const runProject = Effect.fnUntraced(
     const source = yield* IssueSource
     const issuesRef = yield* source.ref(options.project.id)
 
-    let executionMode: ProjectExecutionMode
     if (options.project.gitFlow === "ralph") {
       if (!options.project.ralphSpec) {
         return yield* new RalphSpecMissing({
           projectId: options.project.id,
         })
       }
-      executionMode = {
-        _tag: "ralph",
+      return yield* executeRalphIterations({
+        iterations: options.iterations,
+        project: options.project,
+        stallTimeout: options.stallTimeout,
+        runTimeout: options.runTimeout,
+        maxContext: options.maxContext,
+        targetBranch: options.project.targetBranch,
         specFile: options.project.ralphSpec,
-      }
-    } else {
-      executionMode = {
-        _tag: "standard",
-        gitFlow: options.project.gitFlow,
-      }
+        disableProjectOnComplete: true,
+      })
     }
 
     const resolveGitFlowLayer = () => {
-      if (executionMode._tag === "ralph") {
-        return GitFlowRalph
-      }
-      if (executionMode.gitFlow === "commit") {
+      if (options.project.gitFlow === "commit") {
         return GitFlowCommit
       }
       return GitFlowPR
     }
 
     const resolveRunEffect = (startedDeferred: Deferred.Deferred<void>) => {
-      if (executionMode._tag === "ralph") {
-        return runRalph({
-          targetBranch: options.project.targetBranch,
-          stallTimeout: options.stallTimeout,
-          runTimeout: options.runTimeout,
-          review: options.project.reviewAgent,
-          research: options.project.researchAgent,
-          specFile: executionMode.specFile,
-          maxContext: options.maxContext,
-        })
-      }
       return run({
         startedDeferred,
         targetBranch: options.project.targetBranch,
@@ -610,32 +672,28 @@ const runProject = Effect.fnUntraced(
 
     yield* Atom.mount(activeWorkerLoggingAtom)
 
-    const waitForWork =
-      executionMode._tag === "ralph"
-        ? Effect.void
-        : SubscriptionRef.changes(issuesRef).pipe(
-            Stream.takeUntilEffect(
-              Effect.fnUntraced(function* ({ issues }) {
-                const hasIncomplete = issues.some(
-                  (issue) =>
-                    issue.state === "todo" && issue.blockedBy.length === 0,
-                )
-                if (hasIncomplete) return true
-                if (isFinite) {
-                  quit = true
-                  yield* Effect.log(
-                    `No more work to process, ending after ${iteration} iteration(s).`,
-                  )
-                  return yield* Effect.interrupt
-                }
-                if (Iterable.size(fibers) <= 1) {
-                  yield* Effect.log("No more work to process")
-                }
-                return false
-              }),
-            ),
-            Stream.runDrain,
+    const waitForWork = SubscriptionRef.changes(issuesRef).pipe(
+      Stream.takeUntilEffect(
+        Effect.fnUntraced(function* ({ issues }) {
+          const hasIncomplete = issues.some(
+            (issue) => issue.state === "todo" && issue.blockedBy.length === 0,
           )
+          if (hasIncomplete) return true
+          if (isFinite) {
+            quit = true
+            yield* Effect.log(
+              `No more work to process, ending after ${iteration} iteration(s).`,
+            )
+            return yield* Effect.interrupt
+          }
+          if (Iterable.size(fibers) <= 1) {
+            yield* Effect.log("No more work to process")
+          }
+          return false
+        }),
+      ),
+      Stream.runDrain,
+    )
 
     while (true) {
       yield* semaphore.take(1)
@@ -643,13 +701,10 @@ const runProject = Effect.fnUntraced(
         break
       }
 
-      const currentIteration = iteration
-
       const startedDeferred = yield* Deferred.make<void>()
-      let ralphDone = false
 
       const gitFlowLayer = resolveGitFlowLayer()
-      const fiber = yield* waitForWork.pipe(
+      yield* waitForWork.pipe(
         Effect.andThen(
           resolveRunEffect(startedDeferred).pipe(
             Effect.provide(gitFlowLayer, { local: true }),
@@ -657,15 +712,6 @@ const runProject = Effect.fnUntraced(
           ),
         ),
         Effect.catchTags({
-          ChosenTaskNotFound(_error) {
-            if (executionMode._tag !== "ralph") {
-              return Effect.void
-            }
-            ralphDone = true
-            return Effect.log(
-              `No more work to process for Ralph, ending after ${currentIteration + 1} iteration(s).`,
-            )
-          },
           QuitError(_error) {
             quit = true
             return Effect.void
@@ -681,12 +727,7 @@ const runProject = Effect.fnUntraced(
         FiberSet.run(fibers),
       )
 
-      if (executionMode._tag === "ralph") {
-        yield* Fiber.await(fiber)
-        if (ralphDone) break
-      } else {
-        yield* Deferred.await(startedDeferred)
-      }
+      yield* Deferred.await(startedDeferred)
 
       iteration++
     }
@@ -751,6 +792,82 @@ export const executeRunAll = Effect.fnUntraced(
 
 export const executeRunIssues = (options: RunCommandOptions) =>
   executeRunAll(options)
+
+const resolveFeatureSpecFilePath = Effect.fnUntraced(function* (
+  options: RunFeatureOptions,
+) {
+  const pathService = yield* Path.Path
+  const root = yield* FeatureStorageRoot
+
+  if (pathService.isAbsolute(options.feature.specFilePath)) {
+    return pathService.normalize(options.feature.specFilePath)
+  }
+  return pathService.join(root, options.feature.specFilePath)
+})
+
+export const executeRunFeatureRalph = Effect.fnUntraced(
+  function* (
+    options: RunFeatureOptions & {
+      readonly specFile: string
+      readonly targetBranch: Option.Option<string>
+    },
+  ) {
+    const project = yield* projectById(options.feature.projectId)
+    if (Option.isNone(project)) {
+      return yield* new ProjectNotFound({
+        projectId: options.feature.projectId,
+      })
+    }
+
+    yield* executeRalphIterations({
+      iterations: options.iterations,
+      project: project.value,
+      stallTimeout: Duration.minutes(options.stallMinutes),
+      runTimeout: Duration.minutes(options.maxIterationMinutes),
+      maxContext: options.maxContext,
+      targetBranch: options.targetBranch,
+      specFile: options.specFile,
+      disableProjectOnComplete: false,
+    }).pipe(Effect.provideService(CurrentProjectId, options.feature.projectId))
+  },
+  Effect.scoped,
+  Effect.provide([
+    ClankaMuxerLayer,
+    PromptGen.layer,
+    GithubCli.layer,
+    Settings.layer,
+    CurrentIssueSource.layer,
+    AtomRegistry.layer,
+    Reactivity.layer,
+  ]),
+)
+
+export const executeRunFeatureWith = <E, R>(
+  executeRalphFeature: (
+    options: RunFeatureOptions & {
+      readonly specFile: string
+      readonly targetBranch: Option.Option<string>
+    },
+  ) => Effect.Effect<void, E, R>,
+) =>
+  Effect.fnUntraced(function* (
+    options: RunFeatureOptions,
+  ): Effect.fn.Return<void, E, R | FeatureStorageRoot | Path.Path> {
+    if (options.feature.executionMode === "ralph") {
+      const specFile = yield* resolveFeatureSpecFilePath(options)
+      return yield* executeRalphFeature({
+        ...options,
+        specFile,
+        targetBranch: Option.some(options.feature.featureBranch),
+      })
+    }
+
+    return yield* Effect.log(
+      `Feature "${options.feature.name}" resolved for ${options.feature.executionMode}-mode execution. Feature-aware run orchestration is implemented in a later step of the spec.`,
+    )
+  })
+
+export const executeRunFeature = executeRunFeatureWith(executeRunFeatureRalph)
 
 export const commandRoot = Command.make("lalph", runCommandFlags).pipe(
   Command.withSharedFlags({

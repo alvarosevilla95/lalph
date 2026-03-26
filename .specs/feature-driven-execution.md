@@ -451,6 +451,14 @@ state and supports both PR-mode and Ralph-mode features uniformly.
   current live runtime still only executes the pre-existing top-level issue
   loop; `run feature <name>` resolves stored feature metadata and leaves
   feature-aware execution behavior to the next implementation step.
+- Implementation note: `lalph run feature <name>` now routes
+  `executionMode: "ralph"` features through the existing Ralph runner, using
+  the stored feature `specFilePath` as the spec source and `featureBranch` as
+  the Ralph target branch. PR-mode feature execution remains deferred.
+- Implementation note: feature-scoped Ralph completion must not disable the
+  owning project. Project-scoped Ralph runs still disable the project when the
+  Ralph spec is exhausted, but named feature runs stop after the feature is
+  done without mutating project enablement.
 
 ## Implementation Plan
 
@@ -479,8 +487,11 @@ state and supports both PR-mode and Ralph-mode features uniformly.
      `run feature <name>`, and `run all` against a shared run-service boundary.
 4. [ ] Integrate feature-aware execution behavior.
    - Preserve simple issue execution.
-   - Add PR-mode feature execution against issue-source child tasks.
-   - Add Ralph-mode feature execution against the spec file and feature branch.
+   - [ ] Add PR-mode feature execution against issue-source child tasks.
+   - [x] Add Ralph-mode feature execution against the spec file and feature branch.
+   - `lalph run feature <name>` now dispatches stored Ralph-mode features into
+     the existing Ralph execution loop with resolved spec-file paths and the
+     stored feature branch as the run target.
 5. [ ] Add feature status derivation and integration PR automation.
    - Compute derived display status from local + external state.
    - Automatically create/open final integration PRs when features become ready.

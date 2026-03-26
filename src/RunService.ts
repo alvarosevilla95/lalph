@@ -1,7 +1,11 @@
-import { Effect, Layer, ServiceMap } from "effect"
+import { Layer, ServiceMap } from "effect"
 import type { Feature } from "./domain/Feature.ts"
 import type { RunCommandOptions } from "./commands/run/options.ts"
-import type { executeRunAll, executeRunIssues } from "./commands/root.ts"
+import type {
+  executeRunAll,
+  executeRunFeature,
+  executeRunIssues,
+} from "./commands/root.ts"
 
 export interface RunFeatureOptions extends RunCommandOptions {
   readonly feature: Feature
@@ -14,7 +18,9 @@ export interface RunServiceImplementation {
   readonly runIssues: (
     options: RunCommandOptions,
   ) => ReturnType<typeof executeRunIssues>
-  readonly runFeature: (options: RunFeatureOptions) => Effect.Effect<void>
+  readonly runFeature: (
+    options: RunFeatureOptions,
+  ) => ReturnType<typeof executeRunFeature>
 }
 
 export class RunService extends ServiceMap.Service<

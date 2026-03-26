@@ -3,11 +3,12 @@ import { mkdtemp, rm } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import path from "node:path"
 import { after, describe, it } from "node:test"
-import { Effect } from "effect"
+import { Effect, Option } from "effect"
 import { Command } from "effect/unstable/cli"
 import { appCommand } from "../src/app.ts"
 import { FeatureStorageRoot, FeatureStore } from "../src/FeatureStore.ts"
 import { RunService } from "../src/RunService.ts"
+import { executeRunFeatureWith } from "../src/commands/root.ts"
 import { Feature, FeatureName } from "../src/domain/Feature.ts"
 import { ProjectId } from "../src/domain/Project.ts"
 import { PlatformServices } from "../src/shared/platform.ts"
@@ -130,6 +131,73 @@ describe("run commands", () => {
     )
 
     assert.deepEqual(calls, ["feature:feature-alpha:pr:master:.specs"])
+  })
+
+  it("dispatches Ralph-mode features into the Ralph execution path", async () => {
+    const directory = await makeTempDirectory()
+    const feature = new Feature({
+      ...makeFeature("feature-ralph"),
+      executionMode: "ralph",
+      featureBranch: "feature/ralph-target",
+    })
+    const calls: Array<string> = []
+
+    await Effect.runPromise(
+      executeRunFeatureWith(({ feature, targetBranch }) =>
+        Effect.sync(() => {
+          calls.push(
+            `feature:${feature.name}:${feature.executionMode}:${Option.getOrUndefined(targetBranch)}`,
+          )
+        }),
+      )({
+        feature,
+        iterations: 2,
+        maxIterationMinutes: 45,
+        maxContext: 1200,
+        stallMinutes: 7,
+        specsDirectory: "ignored-specs-directory",
+      }).pipe(
+        Effect.provide(PlatformServices),
+        Effect.provide(FeatureStorageRoot.layerAt(directory)),
+      ),
+    )
+
+    assert.deepEqual(calls, [
+      "feature:feature-ralph:ralph:feature/ralph-target",
+    ])
+  })
+
+  it("resolves Ralph feature spec paths from stored feature metadata", async () => {
+    const directory = await makeTempDirectory()
+    const feature = new Feature({
+      ...makeFeature("feature-spec-path"),
+      executionMode: "ralph",
+      specFilePath: ".specs/nested/feature-spec-path.md",
+      featureBranch: "feature/spec-path",
+    })
+    const calls: Array<string> = []
+
+    await Effect.runPromise(
+      executeRunFeatureWith(({ specFile, targetBranch }) =>
+        Effect.sync(() => {
+          calls.push(`${specFile}:${Option.getOrUndefined(targetBranch)}`)
+        }),
+      )({
+        feature,
+        iterations: 1,
+        maxIterationMinutes: 30,
+        maxContext: undefined,
+        stallMinutes: 5,
+        specsDirectory: "custom-specs-directory",
+      }).pipe(
+        Effect.provide(PlatformServices),
+        Effect.provide(FeatureStorageRoot.layerAt(directory)),
+      ),
+    )
+
+    assert.deepEqual(calls, [
+      `${path.join(directory, ".specs/nested/feature-spec-path.md")}:feature/spec-path`,
+    ])
   })
 
   it("dispatches run all to the global entrypoint", async () => {
