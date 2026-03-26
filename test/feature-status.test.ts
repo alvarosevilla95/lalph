@@ -1,15 +1,19 @@
 import assert from "node:assert/strict"
-import { mkdtemp, rm, mkdir, writeFile } from "node:fs/promises"
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import path from "node:path"
 import { after, describe, it } from "node:test"
 import { Effect, Layer, Option } from "effect"
-import { FeatureFinalPrLookup, FeatureStatus } from "../src/FeatureStatus.ts"
+import {
+  FeatureFinalPrLookup,
+  FeatureStatus,
+  type FeatureStatusResolution,
+} from "../src/FeatureStatus.ts"
 import { FeatureStorageRoot } from "../src/FeatureStore.ts"
-import { PrdIssue } from "../src/domain/PrdIssue.ts"
-import { Feature, FeatureName } from "../src/domain/Feature.ts"
-import { ProjectId } from "../src/domain/Project.ts"
 import { IssueSource } from "../src/IssueSource.ts"
+import { Feature, FeatureName } from "../src/domain/Feature.ts"
+import { PrdIssue } from "../src/domain/PrdIssue.ts"
+import { ProjectId } from "../src/domain/Project.ts"
 import { PlatformServices } from "../src/shared/platform.ts"
 
 const tempDirectories: Array<string> = []
@@ -86,6 +90,23 @@ const finalPrLookupLayer = (
       ),
   })
 
+const provideFeatureStatusLayers =
+  <A, E, R>(
+    directory: string,
+    options?: {
+      readonly issues?: ReadonlyArray<PrdIssue>
+      readonly finalPrStates?: Record<string, "open" | "merged" | "closed">
+    },
+  ) =>
+  (effect: Effect.Effect<A, E, R>) =>
+    effect.pipe(
+      Effect.provide(PlatformServices),
+      Effect.provide(FeatureStorageRoot.layerAt(directory)),
+      Effect.provide(FeatureStatus.layer),
+      Effect.provide(finalPrLookupLayer(options?.finalPrStates ?? {})),
+      Effect.provide(issueSourceLayer(options?.issues ?? [])),
+    )
+
 const runResolve = (
   directory: string,
   feature: Feature,
@@ -95,21 +116,78 @@ const runResolve = (
   },
 ) =>
   Effect.runPromise(
-    FeatureStatus.resolve(feature).pipe(
-      Effect.provide(PlatformServices),
-      Effect.provide(FeatureStorageRoot.layerAt(directory)),
-      Effect.provide(FeatureStatus.layer),
-      Effect.provide(finalPrLookupLayer(options?.finalPrStates ?? {})),
-      Effect.provide(issueSourceLayer(options?.issues ?? [])),
-    ),
+    provideFeatureStatusLayers(
+      directory,
+      options,
+    )(FeatureStatus.resolve(feature)),
+  )
+
+const runResolveWithReason = (
+  directory: string,
+  feature: Feature,
+  options?: {
+    readonly issues?: ReadonlyArray<PrdIssue>
+    readonly finalPrStates?: Record<string, "open" | "merged" | "closed">
+  },
+) =>
+  Effect.runPromise(
+    provideFeatureStatusLayers(
+      directory,
+      options,
+    )(FeatureStatus.resolveWithReason(feature)),
   )
 
 describe("FeatureStatus", () => {
-  it("reports blocked when a PR feature has incomplete child work but nothing runnable", async () => {
+  it("prefers the persisted lifecycle override and explains why", async () => {
+    const directory = await makeTempDirectory()
+    const feature = makeFeature("feature-draft", {
+      lifecycleStatus: "draft",
+      finalIntegrationPrId: "github:42",
+    })
+
+    const resolution = await runResolveWithReason(directory, feature, {
+      finalPrStates: {
+        "github:42": "merged",
+      },
+    })
+
+    assert.deepEqual(resolution, {
+      status: "draft",
+      reason:
+        "Persisted lifecycle status is draft, so the feature remains draft until it is activated.",
+    } satisfies FeatureStatusResolution)
+  })
+
+  it("explains final integration PR state when the PR is open", async () => {
+    const directory = await makeTempDirectory()
+    const feature = makeFeature("feature-integrating", {
+      finalIntegrationPrId: "github:42",
+    })
+
+    const resolution = await runResolveWithReason(directory, feature, {
+      issues: [
+        makeIssue("LIN-201", {
+          parentIssueSourceId: "LIN-101",
+          state: "done",
+        }),
+      ],
+      finalPrStates: {
+        "github:42": "open",
+      },
+    })
+
+    assert.deepEqual(resolution, {
+      status: "integrating",
+      reason:
+        "Final integration PR github:42 is open, so the feature is integrating.",
+    } satisfies FeatureStatusResolution)
+  })
+
+  it("explains PR-mode child issue reconciliation when child work is blocked", async () => {
     const directory = await makeTempDirectory()
     const feature = makeFeature("feature-blocked")
 
-    const status = await runResolve(directory, feature, {
+    const resolution = await runResolveWithReason(directory, feature, {
       issues: [
         makeIssue("LIN-201", {
           parentIssueSourceId: "LIN-101",
@@ -122,51 +200,45 @@ describe("FeatureStatus", () => {
       ],
     })
 
-    assert.equal(status, "blocked")
+    assert.deepEqual(resolution, {
+      status: "blocked",
+      reason:
+        "Child issues under LIN-101 are incomplete, but none are runnable, so the feature is blocked.",
+    } satisfies FeatureStatusResolution)
   })
 
-  it("reports ready when all PR child work is done and no final PR exists", async () => {
+  it("explains Ralph-mode spec reconciliation from the implementation plan", async () => {
     const directory = await makeTempDirectory()
-    const feature = makeFeature("feature-ready")
+    const specDirectory = path.join(directory, ".specs")
+    await mkdir(specDirectory, { recursive: true })
+    await writeFile(
+      path.join(specDirectory, "feature-ralph.md"),
+      `# Feature Ralph
 
-    const status = await runResolve(directory, feature, {
-      issues: [
-        makeIssue("LIN-201", {
-          parentIssueSourceId: "LIN-101",
-          state: "done",
-        }),
-        makeIssue("LIN-202", {
-          parentIssueSourceId: "LIN-101",
-          state: "done",
-        }),
-      ],
-    })
+## Implementation Plan
 
-    assert.equal(status, "ready")
+1. [x] Finish the first task.
+2. [x] Finish the second task.
+`,
+    )
+
+    const resolution = await runResolveWithReason(
+      directory,
+      makeFeature("feature-ralph", {
+        executionMode: "ralph",
+        parentIssueSourceId: undefined,
+        specFilePath: ".specs/feature-ralph.md",
+      }),
+    )
+
+    assert.deepEqual(resolution, {
+      status: "ready",
+      reason:
+        "All tracked implementation-plan tasks in the feature spec are complete, so the feature is ready for final integration.",
+    } satisfies FeatureStatusResolution)
   })
 
-  it("reports integrating when the final integration PR is still open", async () => {
-    const directory = await makeTempDirectory()
-    const feature = makeFeature("feature-integrating", {
-      finalIntegrationPrId: "github:42",
-    })
-
-    const status = await runResolve(directory, feature, {
-      issues: [
-        makeIssue("LIN-201", {
-          parentIssueSourceId: "LIN-101",
-          state: "done",
-        }),
-      ],
-      finalPrStates: {
-        "github:42": "open",
-      },
-    })
-
-    assert.equal(status, "integrating")
-  })
-
-  it("reports complete when the final integration PR has merged", async () => {
+  it("still resolves complete when the final integration PR has merged", async () => {
     const directory = await makeTempDirectory()
     const feature = makeFeature("feature-complete", {
       finalIntegrationPrId: "github:77",
@@ -185,32 +257,5 @@ describe("FeatureStatus", () => {
     })
 
     assert.equal(status, "complete")
-  })
-
-  it("derives Ralph readiness from the feature spec implementation plan", async () => {
-    const directory = await makeTempDirectory()
-    const specDirectory = path.join(directory, ".specs")
-    await mkdir(specDirectory, { recursive: true })
-    await writeFile(
-      path.join(specDirectory, "feature-ralph.md"),
-      `# Feature Ralph
-
-## Implementation Plan
-
-1. [x] Finish the first task.
-2. [x] Finish the second task.
-`,
-    )
-
-    const status = await runResolve(
-      directory,
-      makeFeature("feature-ralph", {
-        executionMode: "ralph",
-        parentIssueSourceId: undefined,
-        specFilePath: ".specs/feature-ralph.md",
-      }),
-    )
-
-    assert.equal(status, "ready")
   })
 })

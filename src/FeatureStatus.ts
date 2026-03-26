@@ -18,9 +18,6 @@ import { filterIssuesByParentIssueSourceId } from "./IssueSourceScope.ts"
 import { Worktree } from "./Worktree.ts"
 import type * as PlatformError from "effect/PlatformError"
 
-const FeatureExecutionStatus = Schema.Literals(["active", "blocked", "ready"])
-type FeatureExecutionStatus = typeof FeatureExecutionStatus.Type
-
 const FeatureFinalPrState = Schema.Literals(["open", "merged", "closed"])
 type FeatureFinalPrState = typeof FeatureFinalPrState.Type
 
@@ -39,27 +36,96 @@ const blockedTaskPattern = new RegExp(
 
 const finalPrIdPattern = /^github:(\d+)$/
 
+export type FeatureStatusResolution = {
+  readonly status: FeatureDisplayStatus
+  readonly reason: string
+}
+
+type FeatureStatusDependencies =
+  | FeatureFinalPrLookup
+  | IssueSource
+  | FeatureStorageRoot
+  | FileSystem.FileSystem
+  | Path.Path
+
+type FeatureStatusError = PlatformError.PlatformError | IssueSourceError
+
+type FeatureStatusEffect<A> = Effect.Effect<
+  A,
+  FeatureStatusError,
+  FeatureStatusDependencies
+>
+
+type FeatureStatusImplementation = {
+  readonly resolve: (
+    feature: Feature,
+  ) => FeatureStatusEffect<FeatureDisplayStatus>
+  readonly resolveWithReason: (
+    feature: Feature,
+  ) => FeatureStatusEffect<FeatureStatusResolution>
+}
+
+type FeatureStatusTestImplementation =
+  | Pick<FeatureStatusImplementation, "resolve">
+  | Pick<FeatureStatusImplementation, "resolveWithReason">
+  | FeatureStatusImplementation
+
+const makeResolution = (
+  status: FeatureDisplayStatus,
+  reason: string,
+): FeatureStatusResolution => ({
+  status,
+  reason,
+})
+
+const withReasonPrefix = (
+  resolution: FeatureStatusResolution,
+  prefix: string,
+): FeatureStatusResolution =>
+  prefix.length === 0
+    ? resolution
+    : makeResolution(resolution.status, `${prefix} ${resolution.reason}`)
+
 const deriveDisplayStatusFromLifecycle = (
   lifecycleStatus: FeatureLifecycleStatus,
-): Option.Option<FeatureDisplayStatus> => {
+): Option.Option<FeatureStatusResolution> => {
   switch (lifecycleStatus) {
     case "draft":
-      return Option.some("draft")
+      return Option.some(
+        makeResolution(
+          "draft",
+          "Persisted lifecycle status is draft, so the feature remains draft until it is activated.",
+        ),
+      )
     case "paused":
-      return Option.some("paused")
+      return Option.some(
+        makeResolution(
+          "paused",
+          "Persisted lifecycle status is paused, so the feature remains paused until it is resumed.",
+        ),
+      )
     case "cancelled":
-      return Option.some("cancelled")
+      return Option.some(
+        makeResolution(
+          "cancelled",
+          "Persisted lifecycle status is cancelled, so the feature remains cancelled.",
+        ),
+      )
     default:
       return Option.none()
   }
 }
 
 const deriveExecutionStatusFromIssueSource = (
+  parentIssueSourceId: string,
   issues: ReadonlyArray<IssueSourceIssueLike>,
-): FeatureExecutionStatus => {
+): FeatureStatusResolution => {
   const hasIncomplete = issues.some((issue) => issue.state !== "done")
   if (!hasIncomplete) {
-    return "ready"
+    return makeResolution(
+      "ready",
+      `All child issues under ${parentIssueSourceId} are done, so the feature is ready for final integration.`,
+    )
   }
 
   const hasActive = issues.some(
@@ -69,11 +135,24 @@ const deriveExecutionStatusFromIssueSource = (
     (issue) => issue.state === "todo" && issue.blockedBy.length === 0,
   )
 
-  if (hasActive || hasRunnable) {
-    return "active"
+  if (hasActive) {
+    return makeResolution(
+      "active",
+      `Child issues under ${parentIssueSourceId} are already in progress or review, so the feature is active.`,
+    )
   }
 
-  return "blocked"
+  if (hasRunnable) {
+    return makeResolution(
+      "active",
+      `Child issues under ${parentIssueSourceId} still have runnable todo work, so the feature is active.`,
+    )
+  }
+
+  return makeResolution(
+    "blocked",
+    `Child issues under ${parentIssueSourceId} are incomplete, but none are runnable, so the feature is blocked.`,
+  )
 }
 
 const extractImplementationPlan = (content: string): string | null => {
@@ -91,10 +170,13 @@ const extractImplementationPlan = (content: string): string | null => {
 
 const deriveExecutionStatusFromSpec = (
   content: string,
-): FeatureExecutionStatus => {
+): FeatureStatusResolution => {
   const implementationPlan = extractImplementationPlan(content)
   if (implementationPlan === null) {
-    return "active"
+    return makeResolution(
+      "active",
+      "Feature spec does not contain a `## Implementation Plan` section, so Ralph-mode status falls back to active.",
+    )
   }
 
   let sawTrackedTask = false
@@ -118,15 +200,27 @@ const deriveExecutionStatusFromSpec = (
   }
 
   if (!sawTrackedTask) {
-    return "active"
+    return makeResolution(
+      "active",
+      "Feature spec does not contain tracked implementation-plan tasks, so Ralph-mode status falls back to active.",
+    )
   }
   if (hasPending) {
-    return "active"
+    return makeResolution(
+      "active",
+      "Feature spec still has unchecked implementation-plan tasks, so the feature is active.",
+    )
   }
   if (hasBlocked) {
-    return "blocked"
+    return makeResolution(
+      "blocked",
+      "Feature spec only has blocked implementation-plan tasks remaining, so the feature is blocked.",
+    )
   }
-  return "ready"
+  return makeResolution(
+    "ready",
+    "All tracked implementation-plan tasks in the feature spec are complete, so the feature is ready for final integration.",
+  )
 }
 
 const parseFinalPrNumber = (finalIntegrationPrId: string) => {
@@ -203,92 +297,151 @@ export class FeatureFinalPrLookup extends ServiceMap.Service<
   }
 }
 
+const resolveWithReasonImpl = Effect.fn("FeatureStatus.resolveWithReason")(
+  function* (
+    feature: Feature,
+  ): Effect.fn.Return<
+    FeatureStatusResolution,
+    FeatureStatusError,
+    FeatureStatusDependencies
+  > {
+    const lifecycleOverride = deriveDisplayStatusFromLifecycle(
+      feature.lifecycleStatus,
+    )
+    if (Option.isSome(lifecycleOverride)) {
+      return lifecycleOverride.value
+    }
+
+    let executionReasonPrefix = ""
+    if (feature.finalIntegrationPrId) {
+      const finalPrState = yield* FeatureFinalPrLookup.lookup(
+        feature.finalIntegrationPrId,
+      )
+      if (Option.isSome(finalPrState)) {
+        switch (finalPrState.value) {
+          case "merged":
+            return makeResolution(
+              "complete",
+              `Final integration PR ${feature.finalIntegrationPrId} is merged, so the feature is complete.`,
+            )
+          case "open":
+            return makeResolution(
+              "integrating",
+              `Final integration PR ${feature.finalIntegrationPrId} is open, so the feature is integrating.`,
+            )
+          case "closed":
+            executionReasonPrefix = `Final integration PR ${feature.finalIntegrationPrId} is closed without merge, so reconciliation falls back to execution progress.`
+            break
+        }
+      }
+    }
+
+    if (feature.executionMode === "pr") {
+      if (!feature.parentIssueSourceId) {
+        return withReasonPrefix(
+          makeResolution(
+            "active",
+            "PR-mode feature has no parent issue source ID, so the feature stays active until child work can be reconciled.",
+          ),
+          executionReasonPrefix,
+        )
+      }
+
+      const source = yield* IssueSource
+      const issues = yield* source.issues(feature.projectId)
+      return withReasonPrefix(
+        deriveExecutionStatusFromIssueSource(
+          feature.parentIssueSourceId,
+          filterIssuesByParentIssueSourceId(
+            issues,
+            feature.parentIssueSourceId,
+          ),
+        ),
+        executionReasonPrefix,
+      )
+    }
+
+    const fs = yield* FileSystem.FileSystem
+    const pathService = yield* Path.Path
+    const root = yield* FeatureStorageRoot
+    const specFile = pathService.isAbsolute(feature.specFilePath)
+      ? pathService.normalize(feature.specFilePath)
+      : pathService.join(root, feature.specFilePath)
+    const content = yield* fs.readFileString(specFile)
+    return withReasonPrefix(
+      deriveExecutionStatusFromSpec(content),
+      executionReasonPrefix,
+    )
+  },
+)
+
+const resolveImpl = Effect.fn("FeatureStatus.resolve")(function* (
+  feature: Feature,
+): Effect.fn.Return<
+  FeatureDisplayStatus,
+  FeatureStatusError,
+  FeatureStatusDependencies
+> {
+  const resolution = yield* resolveWithReasonImpl(feature)
+  return resolution.status
+})
+
+const normalizeTestImplementation = (
+  implementation: FeatureStatusTestImplementation,
+): FeatureStatusImplementation => {
+  if ("resolve" in implementation && "resolveWithReason" in implementation) {
+    return implementation
+  }
+
+  if ("resolveWithReason" in implementation) {
+    return {
+      resolveWithReason: implementation.resolveWithReason,
+      resolve: (feature) =>
+        implementation
+          .resolveWithReason(feature)
+          .pipe(Effect.map((resolution) => resolution.status)),
+    }
+  }
+
+  return {
+    resolve: implementation.resolve,
+    resolveWithReason: (feature) =>
+      implementation
+        .resolve(feature)
+        .pipe(
+          Effect.map((status) =>
+            makeResolution(status, `Feature resolved to ${status}.`),
+          ),
+        ),
+  }
+}
+
 export class FeatureStatus extends ServiceMap.Service<
   FeatureStatus,
-  {
-    readonly resolve: (
-      feature: Feature,
-    ) => Effect.Effect<
-      FeatureDisplayStatus,
-      PlatformError.PlatformError | IssueSourceError,
-      | FeatureFinalPrLookup
-      | IssueSource
-      | FeatureStorageRoot
-      | FileSystem.FileSystem
-      | Path.Path
-    >
-  }
+  FeatureStatusImplementation
 >()("lalph/FeatureStatus") {
   static readonly layer = Layer.succeed(
     this,
     this.of({
-      resolve: Effect.fn("FeatureStatus.resolve")(function* (
-        feature: Feature,
-      ): Effect.fn.Return<
-        FeatureDisplayStatus,
-        PlatformError.PlatformError | IssueSourceError,
-        | FeatureFinalPrLookup
-        | IssueSource
-        | FeatureStorageRoot
-        | FileSystem.FileSystem
-        | Path.Path
-      > {
-        const lifecycleOverride = deriveDisplayStatusFromLifecycle(
-          feature.lifecycleStatus,
-        )
-        if (Option.isSome(lifecycleOverride)) {
-          return lifecycleOverride.value
-        }
-
-        if (feature.finalIntegrationPrId) {
-          const finalPrState = yield* FeatureFinalPrLookup.lookup(
-            feature.finalIntegrationPrId,
-          )
-          if (Option.isSome(finalPrState)) {
-            switch (finalPrState.value) {
-              case "merged":
-                return "complete"
-              case "open":
-                return "integrating"
-              case "closed":
-                break
-            }
-          }
-        }
-
-        if (feature.executionMode === "pr") {
-          if (!feature.parentIssueSourceId) {
-            return "active"
-          }
-
-          const source = yield* IssueSource
-          const issues = yield* source.issues(feature.projectId)
-          return deriveExecutionStatusFromIssueSource(
-            filterIssuesByParentIssueSourceId(
-              issues,
-              feature.parentIssueSourceId,
-            ),
-          )
-        }
-
-        const fs = yield* FileSystem.FileSystem
-        const pathService = yield* Path.Path
-        const root = yield* FeatureStorageRoot
-        const specFile = pathService.isAbsolute(feature.specFilePath)
-          ? pathService.normalize(feature.specFilePath)
-          : pathService.join(root, feature.specFilePath)
-        const content = yield* fs.readFileString(specFile)
-        return deriveExecutionStatusFromSpec(content)
-      }),
+      resolve: resolveImpl,
+      resolveWithReason: resolveWithReasonImpl,
     }),
   )
+
   static layerTest(
-    implementation: FeatureStatus["Service"],
+    implementation: FeatureStatusTestImplementation,
   ): Layer.Layer<FeatureStatus> {
-    return Layer.succeed(this, implementation)
+    return Layer.succeed(
+      this,
+      this.of(normalizeTestImplementation(implementation)),
+    )
   }
 
   static resolve(feature: Feature) {
     return this.use((service) => service.resolve(feature))
+  }
+
+  static resolveWithReason(feature: Feature) {
+    return this.use((service) => service.resolveWithReason(feature))
   }
 }

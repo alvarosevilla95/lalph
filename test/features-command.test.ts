@@ -14,7 +14,10 @@ import {
 } from "../src/FeatureCreationBootstrap.ts"
 import { FeatureEditWizard } from "../src/FeatureEditing.ts"
 import { InvalidFeatureLifecycleTransition } from "../src/FeatureLifecycle.ts"
-import { FeatureStatus } from "../src/FeatureStatus.ts"
+import {
+  FeatureStatus,
+  type FeatureStatusResolution,
+} from "../src/FeatureStatus.ts"
 import {
   FeatureAlreadyExists,
   FeatureNotFound,
@@ -85,6 +88,7 @@ const runFeaturesCommand = (
     readonly wizardInput?: Parameters<typeof FeatureCreateWizard.layerTest>[0]
     readonly editWizardInput?: Parameters<typeof FeatureEditWizard.layerTest>[0]
     readonly featureStatuses?: Record<string, FeatureDisplayStatus>
+    readonly featureStatusReasons?: Record<string, string>
     readonly featureBranchBootstrap?: FeatureBranchBootstrap["Service"]
     readonly featureParentIssueBootstrap?: FeatureParentIssueBootstrap["Service"]
   },
@@ -100,6 +104,17 @@ const runFeaturesCommand = (
             (options?.featureStatuses?.[String(feature.name)] ??
               feature.lifecycleStatus) as FeatureDisplayStatus,
           ),
+        resolveWithReason: (feature) =>
+          Effect.succeed({
+            status: (options?.featureStatuses?.[String(feature.name)] ??
+              feature.lifecycleStatus) as FeatureDisplayStatus,
+            reason:
+              options?.featureStatusReasons?.[String(feature.name)] ??
+              `Feature resolved to ${
+                (options?.featureStatuses?.[String(feature.name)] ??
+                  feature.lifecycleStatus) as FeatureDisplayStatus
+              }.`,
+          } satisfies FeatureStatusResolution),
       }),
     ),
   )
@@ -230,6 +245,10 @@ describe("features commands", () => {
           featureStatuses: {
             "feature-inspect": "integrating",
           },
+          featureStatusReasons: {
+            "feature-inspect":
+              "Final integration PR github:42 is open, so the feature is integrating.",
+          },
         }),
       ),
     )
@@ -241,6 +260,10 @@ describe("features commands", () => {
     assert.match(output, /  Base branch: master/)
     assert.match(output, /  Feature branch: feature\/feature-inspect/)
     assert.match(output, /  Display status: integrating/)
+    assert.match(
+      output,
+      /  Why: Final integration PR github:42 is open, so the feature is integrating\./,
+    )
     assert.match(output, /  Persisted lifecycle status: draft/)
     assert.match(output, /  Parent issue source ID: LIN-101/)
     assert.match(output, /  Final integration PR ID: github:42/)

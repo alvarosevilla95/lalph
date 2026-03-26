@@ -19,7 +19,9 @@ export const commandFeaturesShow = Command.make("show", {
         return yield* new FeatureNotFound({ name: featureName })
       }
 
-      const displayStatus = yield* FeatureStatus.resolve(feature.value)
+      const displayStatus = yield* FeatureStatus.resolveWithReason(
+        feature.value,
+      )
 
       console.log(`Feature: ${feature.value.name}`)
       console.log(`  Project: ${feature.value.projectId}`)
@@ -27,7 +29,8 @@ export const commandFeaturesShow = Command.make("show", {
       console.log(`  Spec file: ${feature.value.specFilePath}`)
       console.log(`  Base branch: ${feature.value.baseBranch}`)
       console.log(`  Feature branch: ${feature.value.featureBranch}`)
-      console.log(`  Display status: ${displayStatus}`)
+      console.log(`  Display status: ${displayStatus.status}`)
+      console.log(`  Why: ${displayStatus.reason}`)
       console.log(
         `  Persisted lifecycle status: ${feature.value.lifecycleStatus}`,
       )

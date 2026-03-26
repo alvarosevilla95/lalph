@@ -524,6 +524,11 @@ resume <name>` now provide dedicated manual lifecycle controls over stored
   blocked markers (`[-]`, `[~]`, `[!]`, or `[blocked]`) resolve to `blocked`
   when no active tasks remain. Specs without tracked implementation-plan task
   markers currently fall back to `active`.
+- Implementation note: feature-status reconciliation now also returns a short
+  explanation string alongside the derived display status. `lalph features
+show <name>` prints that reason so users can see whether the current state
+  came from a persisted lifecycle override, final integration PR state,
+  PR-mode child-task reconciliation, or Ralph-mode spec reconciliation.
 
 ## Implementation Plan
 
@@ -579,6 +584,9 @@ resume <name>` now provide dedicated manual lifecycle controls over stored
      `lalph features ls` / `show`, reconciling persisted lifecycle metadata
      with final PR state plus PR-mode child-task state or Ralph spec task
      state.
+   - `src/FeatureStatus.ts` now also returns a short reason string with the
+     reconciled display status, and `lalph features show <name>` prints that
+     explanation to make the derived state inspectable from the CLI.
    - Command-level coverage now verifies that `features ls` and
      `features show <name>` report the derived display status, while resolver
      tests cover `blocked`, `ready`, `integrating`, merged-PR `complete`, and
