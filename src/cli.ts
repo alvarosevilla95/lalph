@@ -10,6 +10,10 @@ import { MinimumLogLevel } from "effect/References"
 import { PlatformServices } from "./shared/platform.ts"
 import { FeatureStorageRoot, FeatureStore } from "./FeatureStore.ts"
 import { FeatureCreateWizard } from "./FeatureCreation.ts"
+import {
+  FeatureBranchBootstrap,
+  FeatureParentIssueBootstrap,
+} from "./FeatureCreationBootstrap.ts"
 import { FeatureEditWizard } from "./FeatureEditing.ts"
 import {
   FeatureFinalIntegration,
@@ -23,6 +27,8 @@ import { CurrentIssueSource } from "./CurrentIssueSource.ts"
 appCommand.pipe(
   Command.provide(Settings.layer),
   Command.provide(FeatureCreateWizard.layer),
+  Command.provide(FeatureBranchBootstrap.layer),
+  Command.provide(FeatureParentIssueBootstrap.layer),
   Command.provide(FeatureEditWizard.layer),
   Command.provide(FeatureStorageRoot.layer),
   Command.provide(FeatureStore.layer),

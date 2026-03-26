@@ -1,6 +1,7 @@
 import {
   Data,
   Effect,
+  Exit,
   FileSystem,
   Layer,
   Option,
@@ -16,6 +17,10 @@ import {
 import { Feature, FeatureExecutionMode, FeatureName } from "./domain/Feature.ts"
 import type { Project } from "./domain/Project.ts"
 import { getAllProjects } from "./Projects.ts"
+import {
+  FeatureBranchBootstrap as FeatureBranchBootstrapService,
+  FeatureParentIssueBootstrap as FeatureParentIssueBootstrapService,
+} from "./FeatureCreationBootstrap.ts"
 
 export type FeatureSpecFileSource = "new" | "existing"
 
@@ -109,6 +114,9 @@ const normalizeInput = (input: FeatureCreateInput): FeatureCreateInput => ({
   specFilePath: input.specFilePath.trim(),
 })
 
+const ignoreCleanupFailure = <E, R>(effect: Effect.Effect<void, E, R>) =>
+  effect.pipe(Effect.catch(() => Effect.void))
+
 const bootstrapSpecFile = Effect.fnUntraced(function* (
   input: FeatureCreateInput,
 ) {
@@ -125,7 +133,7 @@ const bootstrapSpecFile = Effect.fnUntraced(function* (
     if (!(yield* fs.exists(absoluteSpecFilePath))) {
       return yield* new SpecFileNotFound({ path: input.specFilePath })
     }
-    return
+    return { cleanup: Effect.void } as const
   }
 
   if (yield* fs.exists(absoluteSpecFilePath)) {
@@ -142,6 +150,12 @@ const bootstrapSpecFile = Effect.fnUntraced(function* (
       executionMode: input.executionMode,
     }),
   )
+
+  return {
+    cleanup: ignoreCleanupFailure(
+      fs.remove(absoluteSpecFilePath, { force: true }),
+    ),
+  } as const
 })
 
 const promptForFeatureCreate = Effect.fnUntraced(function* () {
@@ -255,19 +269,81 @@ export const createFeature = Effect.fnUntraced(function* () {
     return yield* new FeatureAlreadyExists({ name: featureName })
   }
 
-  yield* bootstrapSpecFile(input)
+  let cleanupSpecFile: Effect.Effect<void, never> = Effect.void
+  let cleanupFeatureBranch: Effect.Effect<
+    void,
+    never,
+    FeatureBranchBootstrapService
+  > = Effect.void
+  let cleanupParentIssue: Effect.Effect<
+    void,
+    never,
+    FeatureParentIssueBootstrapService
+  > = Effect.void
 
-  const feature = new Feature({
-    name: featureName,
-    projectId: input.project.id,
-    executionMode: input.executionMode,
-    specFilePath: input.specFilePath,
-    baseBranch: input.baseBranch,
-    featureBranch: input.featureBranch,
-    lifecycleStatus: "active",
-  })
+  const exit = yield* Effect.exit(
+    Effect.gen(function* () {
+      const specBootstrap = yield* bootstrapSpecFile(input)
+      cleanupSpecFile = specBootstrap.cleanup
 
-  yield* FeatureStore.create(feature)
+      const branchBootstrap = yield* FeatureBranchBootstrapService.ensure({
+        baseBranch: input.baseBranch,
+        featureBranch: input.featureBranch,
+      })
+
+      if (branchBootstrap.created) {
+        cleanupFeatureBranch = FeatureBranchBootstrapService.delete(
+          input.featureBranch,
+        ).pipe(ignoreCleanupFailure)
+      }
+
+      let parentIssueSourceId: string | undefined = undefined
+      if (input.executionMode === "pr") {
+        const parent = yield* FeatureParentIssueBootstrapService.create({
+          projectId: input.project.id,
+          featureName: input.name,
+          executionMode: input.executionMode,
+          baseBranch: input.baseBranch,
+          featureBranch: input.featureBranch,
+          specFilePath: input.specFilePath,
+        })
+
+        parentIssueSourceId = parent.id
+        cleanupParentIssue = FeatureParentIssueBootstrapService.cancel({
+          projectId: input.project.id,
+          issueId: parent.id,
+        }).pipe(ignoreCleanupFailure)
+      }
+
+      const feature = new Feature({
+        name: featureName,
+        projectId: input.project.id,
+        executionMode: input.executionMode,
+        specFilePath: input.specFilePath,
+        baseBranch: input.baseBranch,
+        featureBranch: input.featureBranch,
+        lifecycleStatus: "active",
+        parentIssueSourceId,
+      })
+
+      yield* FeatureStore.create(feature)
+
+      cleanupSpecFile = Effect.void
+      cleanupFeatureBranch = Effect.void
+      cleanupParentIssue = Effect.void
+
+      return feature
+    }),
+  )
+
+  if (Exit.isFailure(exit)) {
+    yield* cleanupParentIssue
+    yield* cleanupFeatureBranch
+    yield* cleanupSpecFile
+    return yield* Effect.failCause(exit.cause)
+  }
+
+  const feature = exit.value
 
   console.log(`Created feature: ${feature.name}`)
   console.log(`  Project: ${feature.projectId}`)
@@ -276,4 +352,7 @@ export const createFeature = Effect.fnUntraced(function* () {
   console.log(`  Feature branch: ${feature.featureBranch}`)
   console.log(`  Spec file: ${feature.specFilePath}`)
   console.log(`  Lifecycle status: ${feature.lifecycleStatus}`)
+  if (feature.parentIssueSourceId) {
+    console.log(`  Parent issue source ID: ${feature.parentIssueSourceId}`)
+  }
 })

@@ -433,10 +433,11 @@ state and supports both PR-mode and Ralph-mode features uniformly.
   `/Users/alvaro/Developer/cloned/lalph/.specs/feature-driven-execution.md`,
   but this checkout only contains the local `.specs/feature-driven-execution.md`
   path; implementation tracking was updated here instead.
-- Implementation note: `lalph features create` now bootstraps the local
-  feature metadata entry and spec file path, with duplicate-name protection.
-  Git feature-branch creation and PR-mode parent issue creation remain deferred
-  to the later execution/integration work in this spec.
+- Implementation note: `lalph features create` now bootstraps the feature
+  branch before persisting the feature, creates a PR-mode parent issue-source
+  item and stores its identifier in `parentIssueSourceId`, and rolls back the
+  new spec file plus any newly created branch when bootstrap fails before the
+  feature metadata is written.
 - Implementation note: `lalph features edit <name>` now re-prompts the stored
   execution mode, spec path, base branch, feature branch, and lifecycle status,
   persists updates through `FeatureStore.update(...)`, and can optionally
@@ -519,8 +520,10 @@ state and supports both PR-mode and Ralph-mode features uniformly.
      `lalph features show <name>`, backed by `FeatureStore.list()` and
      `FeatureStore.load()` with command-level tests.
    - `lalph features create` now guides users through project, execution mode,
-     feature name, branches, and spec source/path, then persists the feature
-     and bootstraps a new spec file when requested.
+     feature name, branches, and spec source/path, bootstraps the configured
+     feature branch, creates a PR-mode parent issue-source item when needed,
+     persists `parentIssueSourceId`, and bootstraps a new spec file when
+     requested.
    - `lalph features edit <name>` now updates stored feature metadata through a
      dedicated edit wizard, preserves non-edited durable references, and can
      optionally reopen the feature spec file in the user's editor.

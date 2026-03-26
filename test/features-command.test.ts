@@ -6,6 +6,12 @@ import { after, describe, it } from "node:test"
 import { Effect, Option } from "effect"
 import { Command } from "effect/unstable/cli"
 import { FeatureCreateWizard } from "../src/FeatureCreation.ts"
+import {
+  FeatureBranchBootstrap,
+  FeatureBranchBootstrapFailed,
+  FeatureParentIssueBootstrap,
+  FeatureParentIssueBootstrapFailed,
+} from "../src/FeatureCreationBootstrap.ts"
 import { FeatureEditWizard } from "../src/FeatureEditing.ts"
 import { FeatureStatus } from "../src/FeatureStatus.ts"
 import {
@@ -78,6 +84,8 @@ const runFeaturesCommand = (
     readonly wizardInput?: Parameters<typeof FeatureCreateWizard.layerTest>[0]
     readonly editWizardInput?: Parameters<typeof FeatureEditWizard.layerTest>[0]
     readonly featureStatuses?: Record<string, FeatureDisplayStatus>
+    readonly featureBranchBootstrap?: FeatureBranchBootstrap["Service"]
+    readonly featureParentIssueBootstrap?: FeatureParentIssueBootstrap["Service"]
   },
 ) => {
   let effect = Command.runWith(commandFeatures, { version: "test" })(args).pipe(
@@ -105,6 +113,22 @@ const runFeaturesCommand = (
       options?.editWizardInput
         ? FeatureEditWizard.layerTest(options.editWizardInput)
         : FeatureEditWizard.layer,
+    ),
+    Effect.provide(
+      FeatureBranchBootstrap.layerTest(
+        options?.featureBranchBootstrap ?? {
+          ensure: () => Effect.succeed({ created: false }),
+          delete: () => Effect.void,
+        },
+      ),
+    ),
+    Effect.provide(
+      FeatureParentIssueBootstrap.layerTest(
+        options?.featureParentIssueBootstrap ?? {
+          create: () => Effect.succeed({ id: "LIN-100" }),
+          cancel: () => Effect.void,
+        },
+      ),
     ),
   )
 
@@ -344,8 +368,15 @@ describe("features commands", () => {
     assert.equal(persistedFeature.finalIntegrationPrId, "github:77")
   })
 
-  it("creates a feature and bootstraps its spec file", async () => {
+  it("creates a PR-mode feature and bootstraps its branch, parent issue, and spec file", async () => {
     const directory = await makeTempDirectory()
+    const branchCalls: Array<{ baseBranch: string; featureBranch: string }> = []
+    const parentCalls: Array<{
+      featureName: string
+      baseBranch: string
+      featureBranch: string
+      specFilePath: string
+    }> = []
     const wizardInput = {
       project: makeProject(),
       executionMode: "pr" as const,
@@ -360,12 +391,43 @@ describe("features commands", () => {
       Effect.runPromise(
         runFeaturesCommand(directory, ["create"], {
           wizardInput,
+          featureBranchBootstrap: {
+            ensure: (options) => {
+              branchCalls.push(options)
+              return Effect.succeed({ created: true })
+            },
+            delete: () => Effect.void,
+          },
+          featureParentIssueBootstrap: {
+            create: (options) => {
+              parentCalls.push(options)
+              return Effect.succeed({ id: "LIN-101" })
+            },
+            cancel: () => Effect.void,
+          },
         }),
       ),
     )
 
     assert.match(output, /Created feature: feature-create/)
     assert.match(output, /  Lifecycle status: active/)
+    assert.match(output, /  Parent issue source ID: LIN-101/)
+    assert.deepEqual(branchCalls, [
+      {
+        baseBranch: "master",
+        featureBranch: "feature/feature-create",
+      },
+    ])
+    assert.deepEqual(parentCalls, [
+      {
+        featureName: "feature-create",
+        baseBranch: "master",
+        featureBranch: "feature/feature-create",
+        specFilePath: ".specs/feature-create.md",
+        executionMode: "pr",
+        projectId: ProjectId.makeUnsafe("project-alpha"),
+      },
+    ])
 
     const featureFiles = await readdir(
       path.join(directory, ".lalph", "features"),
@@ -388,6 +450,7 @@ describe("features commands", () => {
         baseBranch: "master",
         featureBranch: "feature/feature-create",
         lifecycleStatus: "active",
+        parentIssueSourceId: "LIN-101",
       }),
     )
 
@@ -399,6 +462,175 @@ describe("features commands", () => {
     assert.match(
       specFile,
       /Planned pr-mode feature created with `lalph features create`\./,
+    )
+  })
+
+  it("keeps Ralph-mode feature creation spec-only apart from branch bootstrap", async () => {
+    const directory = await makeTempDirectory()
+    const branchCalls: Array<{ baseBranch: string; featureBranch: string }> = []
+    const wizardInput = {
+      project: makeProject(),
+      executionMode: "ralph" as const,
+      name: "feature-ralph-create",
+      baseBranch: "master",
+      featureBranch: "feature/feature-ralph-create",
+      specFilePath: ".specs/feature-ralph-create.md",
+      specFileSource: "new" as const,
+    }
+
+    await captureConsoleLogs(() =>
+      Effect.runPromise(
+        runFeaturesCommand(directory, ["create"], {
+          wizardInput,
+          featureBranchBootstrap: {
+            ensure: (options) => {
+              branchCalls.push(options)
+              return Effect.succeed({ created: false })
+            },
+            delete: () => Effect.void,
+          },
+          featureParentIssueBootstrap: {
+            create: () => Effect.die("unexpected parent issue bootstrap"),
+            cancel: () => Effect.void,
+          },
+        }),
+      ),
+    )
+
+    assert.deepEqual(branchCalls, [
+      {
+        baseBranch: "master",
+        featureBranch: "feature/feature-ralph-create",
+      },
+    ])
+
+    const storedFeature = Feature.decodeSync(
+      await readFile(
+        path.join(directory, ".lalph", "features", "feature-ralph-create.json"),
+        "utf8",
+      ),
+    )
+
+    assert.equal(storedFeature.executionMode, "ralph")
+    assert.equal(storedFeature.parentIssueSourceId, undefined)
+  })
+
+  it("rolls back local feature state when branch bootstrap fails", async () => {
+    const directory = await makeTempDirectory()
+    const exit = await Effect.runPromiseExit(
+      runFeaturesCommand(directory, ["create"], {
+        wizardInput: {
+          project: makeProject(),
+          executionMode: "pr",
+          name: "feature-branch-failure",
+          baseBranch: "master",
+          featureBranch: "feature/feature-branch-failure",
+          specFilePath: ".specs/feature-branch-failure.md",
+          specFileSource: "new",
+        },
+        featureBranchBootstrap: {
+          ensure: () =>
+            Effect.fail(
+              new FeatureBranchBootstrapFailed({
+                baseBranch: "master",
+                featureBranch: "feature/feature-branch-failure",
+                cause: new Error("boom"),
+              }),
+            ),
+          delete: () => Effect.void,
+        },
+      }),
+    )
+
+    assert.equal(exit._tag, "Failure")
+    assert.ok(
+      exit.cause.reasons[0]?.error instanceof FeatureBranchBootstrapFailed,
+    )
+    assert.equal(
+      exit.cause.reasons[0]?.error.message,
+      'Failed to create or verify feature branch "feature/feature-branch-failure" from base branch "master".',
+    )
+
+    await assert.rejects(() =>
+      readFile(
+        path.join(directory, ".specs", "feature-branch-failure.md"),
+        "utf8",
+      ),
+    )
+    await assert.rejects(() =>
+      readFile(
+        path.join(
+          directory,
+          ".lalph",
+          "features",
+          "feature-branch-failure.json",
+        ),
+        "utf8",
+      ),
+    )
+  })
+
+  it("rolls back the spec and created branch when parent issue bootstrap fails", async () => {
+    const directory = await makeTempDirectory()
+    const deletedBranches: Array<string> = []
+
+    const exit = await Effect.runPromiseExit(
+      runFeaturesCommand(directory, ["create"], {
+        wizardInput: {
+          project: makeProject(),
+          executionMode: "pr",
+          name: "feature-parent-failure",
+          baseBranch: "master",
+          featureBranch: "feature/feature-parent-failure",
+          specFilePath: ".specs/feature-parent-failure.md",
+          specFileSource: "new",
+        },
+        featureBranchBootstrap: {
+          ensure: () => Effect.succeed({ created: true }),
+          delete: (featureBranch) => {
+            deletedBranches.push(featureBranch)
+            return Effect.void
+          },
+        },
+        featureParentIssueBootstrap: {
+          create: () =>
+            Effect.fail(
+              new FeatureParentIssueBootstrapFailed({
+                featureName: "feature-parent-failure",
+                cause: new Error("boom"),
+              }),
+            ),
+          cancel: () => Effect.void,
+        },
+      }),
+    )
+
+    assert.equal(exit._tag, "Failure")
+    assert.ok(
+      exit.cause.reasons[0]?.error instanceof FeatureParentIssueBootstrapFailed,
+    )
+    assert.equal(
+      exit.cause.reasons[0]?.error.message,
+      'Failed to create the parent issue-source item for feature "feature-parent-failure".',
+    )
+    assert.deepEqual(deletedBranches, ["feature/feature-parent-failure"])
+
+    await assert.rejects(() =>
+      readFile(
+        path.join(directory, ".specs", "feature-parent-failure.md"),
+        "utf8",
+      ),
+    )
+    await assert.rejects(() =>
+      readFile(
+        path.join(
+          directory,
+          ".lalph",
+          "features",
+          "feature-parent-failure.json",
+        ),
+        "utf8",
+      ),
     )
   })
 
