@@ -66,6 +66,27 @@ export const commandPlan = Command.make("plan", {
   Command.withHandler(
     Effect.fnUntraced(
       function* ({ dangerous, withNewProject, file }) {
+        const editor = yield* Editor
+        const fs = yield* FileSystem.FileSystem
+
+        const thePlan = yield* Effect.matchEffect(file.asEffect(), {
+          onFailure: () => editor.editTemp({ suffix: ".md" }),
+          onSuccess: (path) => fs.readFileString(path).pipe(Effect.asSome),
+        })
+
+        if (Option.isNone(thePlan)) return
+
+        yield* Effect.addFinalizer((exit) => {
+          if (Exit.isSuccess(exit)) return Effect.void
+          return pipe(
+            editor.saveTemp(thePlan.value, { suffix: ".md" }),
+            Effect.flatMap((file) => Effect.log(`Saved your plan to: ${file}`)),
+            Effect.ignore,
+          )
+        })
+
+        // We nest this effect, so we can launch the editor first as fast as
+        // possible
         yield* Effect.gen(function* () {
           const project = withNewProject
             ? yield* addOrUpdateProject(undefined, true)
@@ -80,27 +101,6 @@ export const commandPlan = Command.make("plan", {
               githubParentIssueNumber: project.githubParentIssueNumber,
             })
           }
-
-          const editor = yield* Editor
-          const fs = yield* FileSystem.FileSystem
-
-          const thePlan = yield* Effect.matchEffect(file.asEffect(), {
-            onFailure: () => editor.editTemp({ suffix: ".md" }),
-            onSuccess: (path) => fs.readFileString(path).pipe(Effect.asSome),
-          })
-
-          if (Option.isNone(thePlan)) return
-
-          yield* Effect.addFinalizer((exit) => {
-            if (Exit.isSuccess(exit)) return Effect.void
-            return pipe(
-              editor.saveTemp(thePlan.value, { suffix: ".md" }),
-              Effect.flatMap((file) =>
-                Effect.log(`Saved your plan to: ${file}`),
-              ),
-              Effect.ignore,
-            )
-          })
 
           const { specsDirectory } = yield* commandRoot
           const preset = yield* selectCliAgentPreset
@@ -193,7 +193,9 @@ const plan = Effect.fnUntraced(
         specificationPath: planDetails.specification,
         targetBranch: githubParentDetails.targetBranch,
       })
-    } else if (Option.isSome(targetBranch)) {
+    }
+
+    if (Option.isSome(targetBranch)) {
       yield* commitAndPushSpecification({
         specsDirectory: options.specsDirectory,
         targetBranch: targetBranch.value,
