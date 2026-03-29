@@ -174,6 +174,7 @@ ${taskGuidelines(options)}`
         readonly specsDirectory: string
         readonly githubPrNumber: number | undefined
         readonly gitFlow: GitFlow["Service"]
+        readonly projectSpecPath?: string | undefined
       }) => `# ${options.task.title}
 
 Task ID: ${options.task.id}
@@ -182,7 +183,10 @@ ${options.task.description}
 
 ### Instructions
 
-Your job is to implement the task described above.${
+Your job is to implement the task described above.${projectSpecReminder({
+        projectSpecPath: options.projectSpecPath,
+        action: "implementation",
+      })}${
         options.task.description.includes(options.specsDirectory)
           ? `\nMake sure to review the prd.yml for any key information that may help you with this task.`
           : ""
@@ -216,6 +220,7 @@ ${keyInformation(options)}`
         readonly specsDirectory: string
         readonly githubPrNumber: number | undefined
         readonly gitFlow: GitFlow["Service"]
+        readonly projectSpecPath?: string | undefined
       }) => `# ${options.task.title}
 
 Task ID: ${options.task.id}
@@ -224,7 +229,12 @@ ${options.task.description}
 
 ### Instructions
 
-All steps must be done before the task can be considered complete.${
+All steps must be done before the task can be considered complete.${projectSpecReminder(
+        {
+          projectSpecPath: options.projectSpecPath,
+          action: "implementation",
+        },
+      )}${
         options.task.description.includes(options.specsDirectory)
           ? `\nMake sure to review the previous tasks (using "listTasks") for any key information that may help you with this task.`
           : ""
@@ -296,6 +306,7 @@ ${options.task.description}`
       const promptReview = (options: {
         readonly prompt: string
         readonly gitFlow: GitFlow["Service"]
+        readonly projectSpecPath?: string | undefined
       }) => `A previous engineer has completed a task from the instructions below.
 
 You job is to meticulously review their work to ensure it meets the task requirements,
@@ -306,6 +317,10 @@ Once you have completed your review, you should:
 
 - Make any code changes needed to fix issues you find.
 - Add follow-up tasks for any work that could not be done, or for remaining issues that need addressing.
+${projectSpecReminder({
+  projectSpecPath: options.projectSpecPath,
+  action: "reviewing the implementation",
+})}
 
 ${options.gitFlow.reviewInstructions}
 
@@ -519,3 +534,11 @@ If you need to add a research task, mention in the description that it needs to:
 - make sure the follow up tasks include a dependency on the research task.`
     : ""
 }`
+
+const projectSpecReminder = (options: {
+  readonly projectSpecPath?: string | undefined
+  readonly action: string
+}) =>
+  options.projectSpecPath
+    ? `\nMake sure to review the project specification at \`${options.projectSpecPath}\` before ${options.action} for any key information that may help you with this task.`
+    : ""

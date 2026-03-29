@@ -68,6 +68,7 @@ const run = Effect.fnUntraced(
     readonly startedDeferred: Deferred.Deferred<void>
     readonly targetBranch: Option.Option<string>
     readonly specsDirectory: string
+    readonly projectSpecPath?: string | undefined
     readonly stallTimeout: Duration.Duration
     readonly runTimeout: Duration.Duration
     readonly research: boolean
@@ -234,6 +235,7 @@ const run = Effect.fnUntraced(
             task: chosenTask.prd,
             githubPrNumber: chosenTask.githubPrNumber ?? undefined,
             gitFlow,
+            projectSpecPath: options.projectSpecPath,
           })
         : promptGen.promptClanka({
             specsDirectory: options.specsDirectory,
@@ -241,6 +243,7 @@ const run = Effect.fnUntraced(
             task: chosenTask.prd,
             githubPrNumber: chosenTask.githubPrNumber ?? undefined,
             gitFlow,
+            projectSpecPath: options.projectSpecPath,
           })
 
       const issueSemaphore = Semaphore.makeUnsafe(1)
@@ -279,6 +282,7 @@ const run = Effect.fnUntraced(
           stallTimeout: options.stallTimeout,
           preset: taskPreset,
           instructions,
+          projectSpecPath: options.projectSpecPath,
           currentTask: CurrentTask.task({ task: chosenTask.prd }),
         }).pipe(catchStallInReview, Effect.withSpan("Main.agentReviewer"))
 
@@ -601,6 +605,9 @@ const runProject = Effect.fnUntraced(
         startedDeferred,
         targetBranch: options.project.targetBranch,
         specsDirectory: options.specsDirectory,
+        projectSpecPath: isGithubParentProject(options.project)
+          ? options.project.specPath
+          : undefined,
         stallTimeout: options.stallTimeout,
         runTimeout: options.runTimeout,
         review: options.project.reviewAgent,

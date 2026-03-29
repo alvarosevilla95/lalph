@@ -275,7 +275,7 @@ Notes:
    - bind the project and persist `specPath`,
    - reject reruns for already-bound projects.
 
-5. [ ] Add prompt guidance for parent-bound task execution:
+5. [x] Add prompt guidance for parent-bound task execution:
    - always instruct the agent to review the project spec when `specPath`
      exists.
 
@@ -298,6 +298,14 @@ Notes:
   is bound, generated tasks are still written to `prd.yml`, and the GitHub
   issue source now links newly created issues to the bound parent automatically
   instead of duplicating child-issue creation logic in `plan.ts`.
+- The standard non-Ralph execution path now threads `project.specPath` into
+  worker and reviewer prompt generation only for `github-parent` projects, so
+  planned parent-bound projects explicitly read the spec before implementation
+  and review while manually bound projects with no spec keep the previous
+  prompts unchanged.
+- Prompt regression coverage now exercises `PromptGen` directly for
+  `github-parent` projects with and without `specPath` to lock down the spec
+  reminder behavior.
 
 ## Deferred for V2
 

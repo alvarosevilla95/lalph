@@ -13,6 +13,7 @@ export const agentReviewer = Effect.fnUntraced(function* (options: {
   readonly stallTimeout: Duration.Duration
   readonly preset: CliAgentPreset
   readonly instructions: string
+  readonly projectSpecPath?: string | undefined
   readonly currentTask: CurrentTask
 }) {
   const fs = yield* FileSystem.FileSystem
@@ -46,6 +47,7 @@ export const agentReviewer = Effect.fnUntraced(function* (options: {
         promptGen.promptReview({
           prompt: options.instructions,
           gitFlow,
+          projectSpecPath: options.projectSpecPath,
         }),
       ),
       mode,
@@ -59,6 +61,7 @@ export const agentReviewer = Effect.fnUntraced(function* (options: {
         promptGen.promptReview({
           prompt: options.instructions,
           gitFlow,
+          projectSpecPath: options.projectSpecPath,
         }),
       ),
       prdFilePath: pathService.join(".lalph", "prd.yml"),
