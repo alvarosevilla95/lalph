@@ -219,6 +219,14 @@ Notes:
 - Rebinding a project to a different parent changes future workset membership;
   the UI should make that risk clear.
 
+## Implementation Notes
+
+- The GitHub adapter already performed automatic child-linking after successful
+  issue creation for bound `github-parent` projects.
+- The remaining gap for `lalph issue` was guarding unbound `github-parent`
+  projects before creation and adding regression coverage for the success and
+  partial-failure paths.
+
 ## Acceptance Criteria
 
 - A PR-flow project can be configured in `github-parent` mode.
@@ -253,9 +261,11 @@ Notes:
    - keep `autoMergeLabel` support active in this mode,
    - hide inactive GitHub filter output when parent mode is active.
 
-3. [ ] Update `lalph issue` for bound-parent child creation:
+3. [x] Update `lalph issue` for bound-parent child creation:
    - auto-link created issues as children of the bound parent,
-   - fail loudly if linking does not succeed.
+   - fail loudly if linking does not succeed,
+   - fail fast with a clear actionable error when the project is unbound,
+   - add regression tests covering success, missing parent, and link failure.
 
 4. [x] Add `lalph plan` support for creating parent-bound projects:
    - create parent issue,

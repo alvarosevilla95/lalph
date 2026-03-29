@@ -18,6 +18,7 @@ import {
   Unify,
 } from "effect"
 import { Octokit } from "octokit"
+import { createGithubIssueForProject } from "./GithubIssueCreation.ts"
 import { IssueSource, IssueSourceError } from "./IssueSource.ts"
 import { PrdIssue } from "./domain/PrdIssue.ts"
 import { getProjectIssueSelectionMode, type Project } from "./domain/Project.ts"
@@ -700,18 +701,6 @@ export const GithubIssueSource = Layer.effect(
           )
           const { issueSelectionMode, githubParentIssueNumber } =
             yield* getProjectConfiguration(projectId)
-          const created = yield* createGithubIssue({
-            title: issue.title,
-            body: issue.description,
-            labels: [
-              ...Option.toArray(labelFilter),
-              ...(issue.autoMerge ? Option.toArray(autoMergeLabelName) : []),
-            ],
-          }).pipe(
-            Effect.provideService(Github, github),
-            Effect.provideService(GithubCli, cli),
-          )
-
           const blockedByNumbers = Array.fromIterable(
             new Set(
               issue.blockedBy
@@ -720,46 +709,34 @@ export const GithubIssueSource = Layer.effect(
             ),
           )
 
-          if (blockedByNumbers.length > 0) {
-            yield* Effect.forEach(
+          return yield* createGithubIssueForProject(
+            {
+              projectId,
+              issueSelectionMode,
+              githubParentIssueNumber,
+              title: issue.title,
+              body: issue.description,
+              labels: [
+                ...Option.toArray(labelFilter),
+                ...(issue.autoMerge ? Option.toArray(autoMergeLabelName) : []),
+              ],
               blockedByNumbers,
-              (dependencyNumber) =>
-                addBlockedByDependency({
-                  issueNumber: created.number,
-                  blockedByNumber: dependencyNumber,
-                }),
-              { concurrency: 5, discard: true },
-            )
-          }
-
-          if (
-            issueSelectionMode === "github-parent" &&
-            Option.isSome(githubParentIssueNumber)
-          ) {
-            yield* addGithubSubIssue({
-              issueNumber: githubParentIssueNumber.value,
-              subIssueUrl: created.url,
-            }).pipe(
-              Effect.provideService(Github, github),
-              Effect.provideService(GithubCli, cli),
-              Effect.mapError(
-                (cause) =>
-                  new GithubSubIssueLinkError({
-                    cause,
-                    parentIssueNumber: githubParentIssueNumber.value,
-                    issueNumber: created.number,
-                    issueUrl: created.url,
-                  }),
-              ),
-            )
-          }
-
-          yield* Effect.sleep(2000)
-
-          return {
-            id: `#${created.number}`,
-            url: created.url,
-          }
+            },
+            {
+              createGithubIssue: (options) =>
+                createGithubIssue(options).pipe(
+                  Effect.provideService(Github, github),
+                  Effect.provideService(GithubCli, cli),
+                ),
+              addBlockedByDependency,
+              addGithubSubIssue: (options) =>
+                addGithubSubIssue(options).pipe(
+                  Effect.provideService(Github, github),
+                  Effect.provideService(GithubCli, cli),
+                ),
+              sleep: Effect.sleep,
+            },
+          )
         },
         Effect.mapError((cause) => new IssueSourceError({ cause })),
       ),
@@ -1011,17 +988,6 @@ export class GithubParentIssueNotFound extends Data.TaggedError(
   readonly issueNumber: number
 }> {
   readonly message = `GitHub parent issue #${this.issueNumber} was not found in the current repository.`
-}
-
-export class GithubSubIssueLinkError extends Data.TaggedError(
-  "GithubSubIssueLinkError",
-)<{
-  readonly cause: unknown
-  readonly parentIssueNumber: number
-  readonly issueNumber: number
-  readonly issueUrl: string
-}> {
-  readonly message = `Created GitHub issue #${this.issueNumber} (${this.issueUrl}) but failed to link it under parent issue #${this.parentIssueNumber}. Link it manually in GitHub and retry.`
 }
 
 // == project filter

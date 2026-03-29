@@ -5,8 +5,13 @@ import { IssueSource } from "../IssueSource.ts"
 import { PrdIssue } from "../domain/PrdIssue.ts"
 import * as Yaml from "yaml"
 import { CurrentProjectId } from "../Settings.ts"
-import { layerProjectIdPrompt } from "../Projects.ts"
+import {
+  layerProjectIdPrompt,
+  projectById,
+  ProjectNotFound,
+} from "../Projects.ts"
 import { Editor } from "../Editor.ts"
+import { assertIssueCommandProjectIsReady } from "./issueFlow.ts"
 
 const issueTemplate = `---
 title: Issue Title
@@ -79,6 +84,11 @@ const handler = flow(
       yield* Effect.gen(function* () {
         const source = yield* IssueSource
         const projectId = yield* CurrentProjectId
+        const projectOption = yield* projectById(projectId)
+        if (Option.isNone(projectOption)) {
+          return yield* new ProjectNotFound({ projectId })
+        }
+        assertIssueCommandProjectIsReady(projectOption.value)
         const created = yield* source.createIssue(
           projectId,
           new PrdIssue({
