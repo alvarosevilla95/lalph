@@ -257,7 +257,7 @@ Notes:
    - auto-link created issues as children of the bound parent,
    - fail loudly if linking does not succeed.
 
-4. [ ] Add `lalph plan` support for creating parent-bound projects:
+4. [x] Add `lalph plan` support for creating parent-bound projects:
    - create parent issue,
    - derive/set parent branch,
    - commit/push spec to the parent branch,
@@ -280,6 +280,14 @@ Notes:
   the runnable set even if GitHub ever returns it unexpectedly.
 - GitHub project and label filter prompts/output are now hidden in
   `github-parent` mode, while `autoMergeLabel` remains configurable.
+- `lalph plan` now rejects reruns for already-bound parent projects before
+  opening the planning workflow, creates a concise parent issue body that points
+  at the generated spec file, and persists the parent binding plus `specPath`
+  after the spec commit/push step.
+- Parent-plan task creation reuses the existing PRD sync path: once the project
+  is bound, generated tasks are still written to `prd.yml`, and the GitHub
+  issue source now links newly created issues to the bound parent automatically
+  instead of duplicating child-issue creation logic in `plan.ts`.
 
 ## Deferred for V2
 

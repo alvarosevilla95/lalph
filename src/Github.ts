@@ -196,16 +196,86 @@ export class Github extends ServiceMap.Service<Github, GithubService>()(
   )
 }
 
+const getGithubIssueByNumber = Effect.fnUntraced(function* (
+  issueNumber: number,
+) {
+  const github = yield* Github
+  const cli = yield* GithubCli
+
+  return yield* github.request((rest) =>
+    rest.issues.get({
+      owner: cli.owner,
+      repo: cli.repo,
+      issue_number: issueNumber,
+    }),
+  )
+})
+
+export const createGithubIssue = Effect.fnUntraced(function* (options: {
+  readonly title: string
+  readonly body?: string | undefined
+  readonly labels?: ReadonlyArray<string> | undefined
+}) {
+  const github = yield* Github
+  const cli = yield* GithubCli
+  const createArgs: {
+    readonly owner: string
+    readonly repo: string
+    readonly title: string
+    readonly body?: string
+    readonly labels?: Array<string>
+  } = {
+    owner: cli.owner,
+    repo: cli.repo,
+    title: options.title,
+  }
+
+  if (options.body !== undefined) {
+    Object.assign(createArgs, { body: options.body })
+  }
+  if (options.labels !== undefined) {
+    Object.assign(createArgs, {
+      labels: Array.fromIterable(options.labels),
+    })
+  }
+
+  const created = yield* github.request((rest) =>
+    rest.issues.create(createArgs),
+  )
+
+  return {
+    number: created.data.number,
+    nodeId: created.data.node_id,
+    url: created.data.html_url,
+  } as const
+})
+
+export const addGithubSubIssue = Effect.fnUntraced(function* (options: {
+  readonly issueNumber: number
+  readonly subIssueUrl: string
+  readonly replaceParent?: boolean | undefined
+}) {
+  const github = yield* Github
+  const parent = yield* getGithubIssueByNumber(options.issueNumber)
+
+  yield* github.graphql<AddSubIssueMutation>(addSubIssueMutation, {
+    issueId: parent.data.node_id,
+    subIssueUrl: options.subIssueUrl,
+    replaceParent: options.replaceParent,
+  })
+})
+
 export const GithubIssueSource = Layer.effect(
   IssueSource,
   Effect.gen(function* () {
     const github = yield* Github
     const cli = yield* GithubCli
+    const settings = yield* Settings
 
     const getProjectConfiguration = Effect.fnUntraced(function* (
       projectId: ProjectId,
     ) {
-      const projects = yield* Settings.get(allProjects)
+      const projects = yield* settings.get(allProjects)
       const project = pipe(
         projects,
         Option.getOrElse((): ReadonlyArray<Project> => []),
@@ -573,7 +643,6 @@ export const GithubIssueSource = Layer.effect(
       )
     }
 
-    const createIssue = github.wrap((rest) => rest.issues.create)
     const updateIssue = github.wrap((rest) => rest.issues.update)
 
     const addBlockedByDependency = Effect.fnUntraced(function* (options: {
@@ -629,16 +698,19 @@ export const GithubIssueSource = Layer.effect(
             projectSettings,
             projectId,
           )
-          const created = yield* createIssue({
-            owner: cli.owner,
-            repo: cli.repo,
+          const { issueSelectionMode, githubParentIssueNumber } =
+            yield* getProjectConfiguration(projectId)
+          const created = yield* createGithubIssue({
             title: issue.title,
             body: issue.description,
             labels: [
               ...Option.toArray(labelFilter),
               ...(issue.autoMerge ? Option.toArray(autoMergeLabelName) : []),
             ],
-          })
+          }).pipe(
+            Effect.provideService(Github, github),
+            Effect.provideService(GithubCli, cli),
+          )
 
           const blockedByNumbers = Array.fromIterable(
             new Set(
@@ -660,11 +732,33 @@ export const GithubIssueSource = Layer.effect(
             )
           }
 
+          if (
+            issueSelectionMode === "github-parent" &&
+            Option.isSome(githubParentIssueNumber)
+          ) {
+            yield* addGithubSubIssue({
+              issueNumber: githubParentIssueNumber.value,
+              subIssueUrl: created.url,
+            }).pipe(
+              Effect.provideService(Github, github),
+              Effect.provideService(GithubCli, cli),
+              Effect.mapError(
+                (cause) =>
+                  new GithubSubIssueLinkError({
+                    cause,
+                    parentIssueNumber: githubParentIssueNumber.value,
+                    issueNumber: created.number,
+                    issueUrl: created.url,
+                  }),
+              ),
+            )
+          }
+
           yield* Effect.sleep(2000)
 
           return {
             id: `#${created.number}`,
-            url: created.html_url,
+            url: created.url,
           }
         },
         Effect.mapError((cause) => new IssueSourceError({ cause })),
@@ -919,6 +1013,17 @@ export class GithubParentIssueNotFound extends Data.TaggedError(
   readonly message = `GitHub parent issue #${this.issueNumber} was not found in the current repository.`
 }
 
+export class GithubSubIssueLinkError extends Data.TaggedError(
+  "GithubSubIssueLinkError",
+)<{
+  readonly cause: unknown
+  readonly parentIssueNumber: number
+  readonly issueNumber: number
+  readonly issueUrl: string
+}> {
+  readonly message = `Created GitHub issue #${this.issueNumber} (${this.issueUrl}) but failed to link it under parent issue #${this.parentIssueNumber}. Link it manually in GitHub and retry.`
+}
+
 // == project filter
 
 const GithubProject = Schema.Struct({
@@ -1088,6 +1193,17 @@ type GithubParentIssueQuery = {
   }
 }
 
+type AddSubIssueMutation = {
+  readonly addSubIssue: {
+    readonly issue: {
+      readonly number: number
+    } | null
+    readonly subIssue: {
+      readonly number: number
+    } | null
+  }
+}
+
 // == helpers
 
 const isGithubProjectIssue = (
@@ -1174,6 +1290,19 @@ query GithubParentIssue($owner: String!, $repo: String!, $issueNumber: Int!, $af
           hasNextPage
         }
       }
+    }
+  }
+}
+`
+
+const addSubIssueMutation = `
+mutation AddSubIssue($issueId: ID!, $subIssueUrl: String, $replaceParent: Boolean) {
+  addSubIssue(input: { issueId: $issueId, subIssueUrl: $subIssueUrl, replaceParent: $replaceParent }) {
+    issue {
+      number
+    }
+    subIssue {
+      number
     }
   }
 }
