@@ -247,7 +247,7 @@ Notes:
    - add runtime guards so configured `github-parent` projects do not silently
      fall back to filtered discovery.
 
-2. [ ] Add GitHub parent-child issue discovery:
+2. [x] Add GitHub parent-child issue discovery:
    - implement a GitHub adapter branch for `filtered` vs `github-parent`,
    - fetch direct child issues of the bound parent and map them to `PrdIssue`,
    - keep `autoMergeLabel` support active in this mode,
@@ -271,9 +271,13 @@ Notes:
 
 ## Implementation Notes
 
-- This change set intentionally covers project configuration and validation
-  only. The runner now fails fast for `github-parent` projects instead of
-  silently using the existing filtered GitHub discovery path.
+- GitHub parent discovery now uses the GraphQL `Issue.subIssues` connection to
+  fetch the bound parent's direct children live on each refresh.
+- The runtime filters the parent-mode discovery set down to open child issues in
+  the current repository before mapping them into `PrdIssue` values.
+- Parent-mode discovery reuses the existing dependency lookup, preset label
+  matching, and `autoMergeLabel` logic, and it excludes the parent issue from
+  the runnable set even if GitHub ever returns it unexpectedly.
 - GitHub project and label filter prompts/output are now hidden in
   `github-parent` mode, while `autoMergeLabel` remains configurable.
 

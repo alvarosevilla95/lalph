@@ -520,15 +520,7 @@ class GithubParentIssueMissing extends Data.TaggedError(
 )<{
   readonly projectId: Project["id"]
 }> {
-  readonly message = `Project "${this.projectId}" is configured with issueSelectionMode="github-parent" but has no bound parent issue. Run 'lalph projects edit' to bind one, or use 'lalph plan' once parent binding support lands.`
-}
-
-class GithubParentIssueSelectionPending extends Data.TaggedError(
-  "GithubParentIssueSelectionPending",
-)<{
-  readonly projectId: Project["id"]
-}> {
-  readonly message = `Project "${this.projectId}" is configured with issueSelectionMode="github-parent", but GitHub child-issue discovery has not been wired into the main runner yet.`
+  readonly message = `Project "${this.projectId}" is configured with issueSelectionMode="github-parent" but has no bound parent issue. Run 'lalph projects edit' to bind one before running the root command.`
 }
 
 type ProjectExecutionMode =
@@ -556,9 +548,6 @@ const runProject = Effect.fnUntraced(
           projectId: options.project.id,
         })
       }
-      return yield* new GithubParentIssueSelectionPending({
-        projectId: options.project.id,
-      })
     }
 
     const isFinite = Number.isFinite(options.iterations)

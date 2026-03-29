@@ -436,62 +436,140 @@ export const GithubIssueSource = Layer.effect(
         Stream.filter((issue) => issue.pull_request === undefined),
       )
 
+    const githubParentIssues = (options: {
+      readonly parentIssueNumber: number
+    }) =>
+      Stream.paginate(null, (cursor: string | null) =>
+        github
+          .graphql<GithubParentIssueQuery>(githubParentIssueQuery, {
+            owner: cli.owner,
+            repo: cli.repo,
+            issueNumber: options.parentIssueNumber,
+            after: cursor,
+          })
+          .pipe(
+            Effect.flatMap((data) => {
+              const parentIssue = data.repository.issue
+              if (parentIssue === null) {
+                return Effect.fail(
+                  new GithubParentIssueNotFound({
+                    issueNumber: options.parentIssueNumber,
+                  }),
+                )
+              }
+
+              return Effect.succeed([
+                parentIssue.subIssues.nodes.flatMap((issue) =>
+                  issue === null
+                    ? []
+                    : [
+                        {
+                          number: issue.number,
+                          title: issue.title,
+                          body: issue.body,
+                          state: issue.state.toLowerCase(),
+                          labels: issue.labels.nodes.map((label) => label.name),
+                          repository: issue.repository,
+                        },
+                      ],
+                ),
+                Option.fromNullOr(
+                  parentIssue.subIssues.pageInfo.hasNextPage
+                    ? parentIssue.subIssues.pageInfo.endCursor
+                    : null,
+                ),
+              ] as const)
+            }),
+          ),
+      ).pipe(
+        Stream.filter(
+          (issue) =>
+            issue.number !== options.parentIssueNumber &&
+            issue.repository.nameWithOwner.toLowerCase() === repository &&
+            issue.state === "open",
+        ),
+      )
+
+    const toPrdIssue = Effect.fnUntraced(function* (
+      issue: GithubIssueListItem,
+      autoMergeLabelName: Option.Option<string>,
+    ) {
+      const id = `#${issue.number}`
+      const dependencies = yield* listOpenBlockedBy(issue.number).pipe(
+        Stream.runCollect,
+      )
+      const state: PrdIssue["state"] =
+        issue.state === "closed"
+          ? "done"
+          : hasLabel(issue.labels, "in-progress")
+            ? "in-progress"
+            : hasLabel(issue.labels, "in-review")
+              ? "in-review"
+              : "todo"
+
+      const preset = presets.find(({ metadata }) =>
+        hasLabel(issue.labels, metadata.label),
+      )
+      if (preset) {
+        issuePresetMap.set(id, preset.preset)
+      }
+
+      return new PrdIssue({
+        id,
+        title: issue.title,
+        description: issue.body ?? "",
+        priority: 0,
+        estimate: null,
+        state,
+        blockedBy: dependencies.map((dep) => `#${dep.number}`),
+        autoMerge: autoMergeLabelName.pipe(
+          Option.map((labelName) => hasLabel(issue.labels, labelName)),
+          Option.getOrElse(() => false),
+        ),
+      })
+    })
+
     const issues = (options: {
+      readonly issueSelectionMode: "filtered" | "github-parent"
+      readonly githubParentIssueNumber: Option.Option<number>
       readonly labelFilter: Option.Option<string>
       readonly projectFilter: Option.Option<GithubProject>
       readonly autoMergeLabelName: Option.Option<string>
     }) => {
       const source = Unify.unify(
-        Option.isSome(options.projectFilter)
-          ? projectIssues({
-              project: options.projectFilter.value,
-              labelFilter: options.labelFilter,
+        options.issueSelectionMode === "github-parent"
+          ? Option.match(options.githubParentIssueNumber, {
+              onNone: () =>
+                Stream.fail(
+                  new IssueSourceError({
+                    cause: new Error(
+                      "GitHub parent issue selection requires a bound parent issue number.",
+                    ),
+                  }),
+                ),
+              onSome: (parentIssueNumber) =>
+                githubParentIssues({ parentIssueNumber }),
             })
-          : repoIssues(options),
+          : Option.isSome(options.projectFilter)
+            ? projectIssues({
+                project: options.projectFilter.value,
+                labelFilter: options.labelFilter,
+              })
+            : repoIssues(options),
       )
 
       return pipe(
         source,
         Stream.mapEffect(
-          Effect.fnUntraced(function* (issue) {
-            const id = `#${issue.number}`
-            const dependencies = yield* listOpenBlockedBy(issue.number).pipe(
-              Stream.runCollect,
-            )
-            const state: PrdIssue["state"] =
-              issue.state === "closed"
-                ? "done"
-                : hasLabel(issue.labels, "in-progress")
-                  ? "in-progress"
-                  : hasLabel(issue.labels, "in-review")
-                    ? "in-review"
-                    : "todo"
-
-            const preset = presets.find(({ metadata }) =>
-              hasLabel(issue.labels, metadata.label),
-            )
-            if (preset) {
-              issuePresetMap.set(id, preset.preset)
-            }
-
-            return new PrdIssue({
-              id,
-              title: issue.title,
-              description: issue.body ?? "",
-              priority: 0,
-              estimate: null,
-              state,
-              blockedBy: dependencies.map((dep) => `#${dep.number}`),
-              autoMerge: options.autoMergeLabelName.pipe(
-                Option.map((labelName) => hasLabel(issue.labels, labelName)),
-                Option.getOrElse(() => false),
-              ),
-            })
-          }),
+          (issue) => toPrdIssue(issue, options.autoMergeLabelName),
           { concurrency: 10 },
         ),
         Stream.runCollect,
-        Effect.mapError((cause) => new IssueSourceError({ cause })),
+        Effect.mapError((cause) =>
+          cause instanceof IssueSourceError
+            ? cause
+            : new IssueSourceError({ cause }),
+        ),
       )
     }
 
@@ -833,6 +911,14 @@ export class GithubRepoNotFound extends Data.TaggedError("GithubRepoNotFound") {
   readonly message = "GitHub repository not found"
 }
 
+export class GithubParentIssueNotFound extends Data.TaggedError(
+  "GithubParentIssueNotFound",
+)<{
+  readonly issueNumber: number
+}> {
+  readonly message = `GitHub parent issue #${this.issueNumber} was not found in the current repository.`
+}
+
 // == project filter
 
 const GithubProject = Schema.Struct({
@@ -941,6 +1027,19 @@ type GithubProjectIssue = {
   readonly closedAt: string | null
 }
 
+type GithubIssueListItem = {
+  readonly number: number
+  readonly title: string
+  readonly body?: string | null
+  readonly state: string
+  readonly labels: ReadonlyArray<
+    | string
+    | {
+        readonly name?: string
+      }
+  >
+}
+
 type GithubProjectItemContent =
   | GithubProjectIssue
   | {
@@ -959,6 +1058,33 @@ type GithubProjectItemsQuery = {
         readonly hasNextPage: boolean
       }
     }
+  }
+}
+
+type GithubParentIssueQuery = {
+  readonly repository: {
+    readonly issue: {
+      readonly subIssues: {
+        readonly nodes: ReadonlyArray<{
+          readonly number: number
+          readonly title: string
+          readonly body: string
+          readonly state: string
+          readonly repository: {
+            readonly nameWithOwner: string
+          }
+          readonly labels: {
+            readonly nodes: ReadonlyArray<{
+              readonly name: string
+            }>
+          }
+        } | null>
+        readonly pageInfo: {
+          readonly endCursor: string | null
+          readonly hasNextPage: boolean
+        }
+      }
+    } | null
   }
 }
 
@@ -1011,6 +1137,35 @@ query GithubProjectItems($projectId: ID!, $after: String) {
               body
               state
               closedAt
+            }
+          }
+        }
+        pageInfo {
+          endCursor
+          hasNextPage
+        }
+      }
+    }
+  }
+}
+`
+
+const githubParentIssueQuery = `
+query GithubParentIssue($owner: String!, $repo: String!, $issueNumber: Int!, $after: String) {
+  repository(owner: $owner, name: $repo) {
+    issue(number: $issueNumber) {
+      subIssues(first: 100, after: $after) {
+        nodes {
+          number
+          title
+          body
+          state
+          repository {
+            nameWithOwner
+          }
+          labels(first: 20) {
+            nodes {
+              name
             }
           }
         }
