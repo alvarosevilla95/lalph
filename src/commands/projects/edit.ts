@@ -7,8 +7,6 @@ import {
 } from "../../Projects.ts"
 import { Settings } from "../../Settings.ts"
 import { CurrentIssueSource } from "../../CurrentIssueSource.ts"
-import { Github } from "../../Github.ts"
-import { GithubCli } from "../../Github/Cli.ts"
 
 export const commandProjectsEdit = Command.make("edit").pipe(
   Command.withDescription(
@@ -26,6 +24,4 @@ export const commandProjectsEdit = Command.make("edit").pipe(
   ),
   Command.provide(Settings.layer),
   Command.provide(CurrentIssueSource.layer),
-  Command.provide(Github.layer),
-  Command.provide(GithubCli.layer),
 )

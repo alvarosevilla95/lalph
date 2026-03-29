@@ -20,12 +20,7 @@ export const layerProjectIdPrompt = Layer.effect(
     const project = yield* selectProject
     return project.id
   }),
-).pipe(
-  Layer.provide(Settings.layer),
-  Layer.provide(CurrentIssueSource.layer),
-  Layer.provide(Github.layer),
-  Layer.provide(GithubCli.layer),
-)
+).pipe(Layer.provide(Settings.layer), Layer.provide(CurrentIssueSource.layer))
 
 export const getAllProjects = Settings.get(allProjects).pipe(
   Effect.map(Option.getOrElse((): ReadonlyArray<Project> => [])),
@@ -142,6 +137,7 @@ const promptGithubParentIssueNumber = Effect.fnUntraced(function* (
     const validationError = yield* validateGithubParentIssueNumber(
       issueNumber,
     ).pipe(
+      Effect.provide([Github.layer, GithubCli.layer]),
       Effect.match({
         onFailure: (message) => Option.some(message),
         onSuccess: () => Option.none<string>(),
@@ -360,6 +356,15 @@ export const addOrUpdateProject = Effect.fnUntraced(function* (
     message: "Enable review agent?",
     initial: existing ? existing.reviewAgent : false,
   })
+  const specPath =
+    gitFlow === "pr" &&
+    issueSelectionMode === "github-parent" &&
+    githubParentIssueNumber !== undefined &&
+    existing?.gitFlow === "pr" &&
+    getProjectIssueSelectionMode(existing) === "github-parent" &&
+    existing.githubParentIssueNumber === githubParentIssueNumber
+      ? existing.specPath
+      : undefined
 
   const project = new Project({
     id: ProjectId.makeUnsafe(id),
@@ -369,7 +374,7 @@ export const addOrUpdateProject = Effect.fnUntraced(function* (
     gitFlow,
     issueSelectionMode,
     githubParentIssueNumber,
-    specPath: existing?.specPath,
+    specPath,
     ralphSpec: Option.getOrUndefined(ralphSpec),
     researchAgent,
     reviewAgent,

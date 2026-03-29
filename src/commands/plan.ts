@@ -114,8 +114,6 @@ export const commandPlan = Command.make("plan", {
           }).pipe(Effect.provideService(CurrentProjectId, project.id))
         }).pipe(
           Effect.provide([
-            Github.layer,
-            GithubCli.layer,
             Settings.layer,
             CurrentIssueSource.layer,
             ClankaMuxerLayer,
@@ -281,7 +279,7 @@ const createGithubParentPlan = Effect.fnUntraced(function* (options: {
   const parentIssue = yield* createGithubIssue({
     title,
     body,
-  })
+  }).pipe(Effect.provide([Github.layer, GithubCli.layer]))
 
   return {
     parentIssueNumber: parentIssue.number,

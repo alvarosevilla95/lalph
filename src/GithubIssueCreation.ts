@@ -1,12 +1,6 @@
-import { Data, Effect, Option, Schema } from "effect"
-
-export class GithubIssueCreationParentMissing extends Data.TaggedError(
-  "GithubIssueCreationParentMissing",
-)<{
-  readonly projectId: string
-}> {
-  readonly message = `Project "${this.projectId}" is configured with issueSelectionMode="github-parent" but has no bound parent issue. Run 'lalph projects edit' to bind one before running 'lalph issue'.`
-}
+import { Data, Effect, Option } from "effect"
+import type { IssueSelectionMode } from "./domain/Project.ts"
+import { ensureGithubParentIssueBinding } from "./GithubParentProject.ts"
 
 export class GithubSubIssueLinkError extends Data.TaggedError(
   "GithubSubIssueLinkError",
@@ -19,12 +13,6 @@ export class GithubSubIssueLinkError extends Data.TaggedError(
   readonly message = `Created GitHub issue #${this.issueNumber} (${this.issueUrl}) but failed to link it under parent issue #${this.parentIssueNumber}. Link it manually in GitHub and retry.`
 }
 
-export const GithubIssueSelectionMode = Schema.Literals([
-  "filtered",
-  "github-parent",
-])
-export type GithubIssueSelectionMode = typeof GithubIssueSelectionMode.Type
-
 export type CreatedGithubIssue = {
   readonly number: number
   readonly url: string
@@ -32,7 +20,7 @@ export type CreatedGithubIssue = {
 
 export type CreateGithubIssueForProjectOptions = {
   readonly projectId: string
-  readonly issueSelectionMode: GithubIssueSelectionMode
+  readonly issueSelectionMode: IssueSelectionMode
   readonly githubParentIssueNumber: Option.Option<number>
   readonly title: string
   readonly body: string
@@ -61,14 +49,12 @@ export const createGithubIssueForProject = Effect.fnUntraced(function* (
   options: CreateGithubIssueForProjectOptions,
   deps: CreateGithubIssueForProjectDeps,
 ) {
-  if (
-    options.issueSelectionMode === "github-parent" &&
-    Option.isNone(options.githubParentIssueNumber)
-  ) {
-    return yield* new GithubIssueCreationParentMissing({
-      projectId: options.projectId,
-    })
-  }
+  yield* ensureGithubParentIssueBinding({
+    projectId: options.projectId,
+    issueSelectionMode: options.issueSelectionMode,
+    githubParentIssueNumber: options.githubParentIssueNumber,
+    action: "creating GitHub issues for this project",
+  })
 
   const created = yield* deps.createGithubIssue({
     title: options.title,

@@ -25,8 +25,7 @@ import { Worktree } from "../Worktree.ts"
 import { Flag, Command, Prompt } from "effect/unstable/cli"
 import { IssueSource, IssueSourceError } from "../IssueSource.ts"
 import { CurrentIssueSource, resetInProgress } from "../CurrentIssueSource.ts"
-import { GithubCli } from "../Github/Cli.ts"
-import { Github } from "../Github.ts"
+import { GithubCli, GithubCliRepoNotFound } from "../Github/Cli.ts"
 import { agentWorker } from "../Agents/worker.ts"
 import { agentChooser, ChosenTaskNotFound } from "../Agents/chooser.ts"
 import { RunnerStalled, TaskStateChanged } from "../domain/Errors.ts"
@@ -47,6 +46,10 @@ import {
   GitFlowPR,
   GitFlowRalph,
 } from "../GitFlow.ts"
+import {
+  ensureGithubParentIssueBinding,
+  toGithubParentBinding,
+} from "../GithubParentProject.ts"
 import { getAllProjects, welcomeWizard } from "../Projects.ts"
 import { isGithubParentProject, type Project } from "../domain/Project.ts"
 import { getDefaultCliAgentPreset } from "../Presets.ts"
@@ -80,6 +83,7 @@ const run = Effect.fnUntraced(
     | IssueSourceError
     | QuitError
     | GitFlowError
+    | GithubCliRepoNotFound
     | ChosenTaskNotFound
     | RunnerStalled
     | TimeoutError
@@ -88,7 +92,6 @@ const run = Effect.fnUntraced(
     | ChildProcessSpawner.ChildProcessSpawner
     | Settings
     | Reactivity.Reactivity
-    | GithubCli
     | IssueSource
     | Prompt.Environment
     | AtomRegistry.AtomRegistry
@@ -104,7 +107,6 @@ const run = Effect.fnUntraced(
     const fs = yield* FileSystem.FileSystem
     const pathService = yield* Path.Path
     const worktree = yield* Worktree
-    const gh = yield* GithubCli
     const prd = yield* Prd
     const source = yield* IssueSource
     const gitFlow = yield* GitFlow
@@ -177,9 +179,17 @@ const run = Effect.fnUntraced(
 
     yield* Deferred.completeWith(options.startedDeferred, Effect.void)
 
-    if (gitFlow.requiresGithubPr && chosenTask.githubPrNumber) {
-      yield* worktree.exec`gh pr checkout ${chosenTask.githubPrNumber}`
-      const feedback = yield* gh.prFeedbackMd(chosenTask.githubPrNumber)
+    const githubPrNumber = chosenTask.githubPrNumber
+    if (
+      gitFlow.requiresGithubPr &&
+      githubPrNumber !== null &&
+      githubPrNumber !== undefined
+    ) {
+      yield* worktree.exec`gh pr checkout ${githubPrNumber}`
+      const feedback = yield* Effect.gen(function* () {
+        const gh = yield* GithubCli
+        return yield* gh.prFeedbackMd(githubPrNumber)
+      }).pipe(Effect.provide(GithubCli.layer))
       yield* fs.writeFileString(
         pathService.join(worktree.directory, ".lalph", "feedback.md"),
         feedback,
@@ -360,7 +370,6 @@ const runRalph = Effect.fnUntraced(
     | ChildProcessSpawner.ChildProcessSpawner
     | Settings
     | Reactivity.Reactivity
-    | GithubCli
     | IssueSource
     | Prompt.Environment
     | AtomRegistry.AtomRegistry
@@ -519,14 +528,6 @@ class RalphSpecMissing extends Data.TaggedError("RalphSpecMissing")<{
   readonly message = `Project "${this.projectId}" is configured with gitFlow="ralph" but is missing "ralphSpec". Run 'lalph projects edit' and set "Path to Ralph spec file".`
 }
 
-class GithubParentIssueMissing extends Data.TaggedError(
-  "GithubParentIssueMissing",
-)<{
-  readonly projectId: Project["id"]
-}> {
-  readonly message = `Project "${this.projectId}" is configured with issueSelectionMode="github-parent" but has no bound parent issue. Run 'lalph projects edit' to bind one before running the root command.`
-}
-
 type ProjectExecutionMode =
   | {
       readonly _tag: "standard"
@@ -546,13 +547,10 @@ const runProject = Effect.fnUntraced(
     readonly runTimeout: Duration.Duration
     readonly maxContext: number | undefined
   }) {
-    if (isGithubParentProject(options.project)) {
-      if (options.project.githubParentIssueNumber === undefined) {
-        return yield* new GithubParentIssueMissing({
-          projectId: options.project.id,
-        })
-      }
-    }
+    yield* ensureGithubParentIssueBinding({
+      ...toGithubParentBinding(options.project),
+      action: "running 'lalph'",
+    })
 
     const isFinite = Number.isFinite(options.iterations)
     const iterationsDisplay = isFinite ? options.iterations : "unlimited"
@@ -820,8 +818,6 @@ export const commandRoot = Command.make("lalph", {
       Effect.provide([
         ClankaMuxerLayer,
         PromptGen.layer,
-        Github.layer,
-        GithubCli.layer,
         Settings.layer,
         CurrentIssueSource.layer,
         AtomRegistry.layer,

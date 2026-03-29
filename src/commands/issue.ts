@@ -11,7 +11,10 @@ import {
   ProjectNotFound,
 } from "../Projects.ts"
 import { Editor } from "../Editor.ts"
-import { assertIssueCommandProjectIsReady } from "./issueFlow.ts"
+import {
+  ensureGithubParentIssueBinding,
+  toGithubParentBinding,
+} from "../GithubParentProject.ts"
 
 const issueTemplate = `---
 title: Issue Title
@@ -88,7 +91,10 @@ const handler = flow(
         if (Option.isNone(projectOption)) {
           return yield* new ProjectNotFound({ projectId })
         }
-        assertIssueCommandProjectIsReady(projectOption.value)
+        yield* ensureGithubParentIssueBinding({
+          ...toGithubParentBinding(projectOption.value),
+          action: "running 'lalph issue'",
+        })
         const created = yield* source.createIssue(
           projectId,
           new PrdIssue({
