@@ -26,6 +26,7 @@ import { Flag, Command, Prompt } from "effect/unstable/cli"
 import { IssueSource, IssueSourceError } from "../IssueSource.ts"
 import { CurrentIssueSource, resetInProgress } from "../CurrentIssueSource.ts"
 import { GithubCli } from "../Github/Cli.ts"
+import { Github } from "../Github.ts"
 import { agentWorker } from "../Agents/worker.ts"
 import { agentChooser, ChosenTaskNotFound } from "../Agents/chooser.ts"
 import { RunnerStalled, TaskStateChanged } from "../domain/Errors.ts"
@@ -47,7 +48,7 @@ import {
   GitFlowRalph,
 } from "../GitFlow.ts"
 import { getAllProjects, welcomeWizard } from "../Projects.ts"
-import type { Project } from "../domain/Project.ts"
+import { isGithubParentProject, type Project } from "../domain/Project.ts"
 import { getDefaultCliAgentPreset } from "../Presets.ts"
 import type { QuitError } from "effect/Terminal"
 import type { TimeoutError } from "effect/Cause"
@@ -514,6 +515,22 @@ class RalphSpecMissing extends Data.TaggedError("RalphSpecMissing")<{
   readonly message = `Project "${this.projectId}" is configured with gitFlow="ralph" but is missing "ralphSpec". Run 'lalph projects edit' and set "Path to Ralph spec file".`
 }
 
+class GithubParentIssueMissing extends Data.TaggedError(
+  "GithubParentIssueMissing",
+)<{
+  readonly projectId: Project["id"]
+}> {
+  readonly message = `Project "${this.projectId}" is configured with issueSelectionMode="github-parent" but has no bound parent issue. Run 'lalph projects edit' to bind one, or use 'lalph plan' once parent binding support lands.`
+}
+
+class GithubParentIssueSelectionPending extends Data.TaggedError(
+  "GithubParentIssueSelectionPending",
+)<{
+  readonly projectId: Project["id"]
+}> {
+  readonly message = `Project "${this.projectId}" is configured with issueSelectionMode="github-parent", but GitHub child-issue discovery has not been wired into the main runner yet.`
+}
+
 type ProjectExecutionMode =
   | {
       readonly _tag: "standard"
@@ -533,6 +550,17 @@ const runProject = Effect.fnUntraced(
     readonly runTimeout: Duration.Duration
     readonly maxContext: number | undefined
   }) {
+    if (isGithubParentProject(options.project)) {
+      if (options.project.githubParentIssueNumber === undefined) {
+        return yield* new GithubParentIssueMissing({
+          projectId: options.project.id,
+        })
+      }
+      return yield* new GithubParentIssueSelectionPending({
+        projectId: options.project.id,
+      })
+    }
+
     const isFinite = Number.isFinite(options.iterations)
     const iterationsDisplay = isFinite ? options.iterations : "unlimited"
     const semaphore = Semaphore.makeUnsafe(options.project.concurrency)
@@ -796,6 +824,7 @@ export const commandRoot = Command.make("lalph", {
       Effect.provide([
         ClankaMuxerLayer,
         PromptGen.layer,
+        Github.layer,
         GithubCli.layer,
         Settings.layer,
         CurrentIssueSource.layer,

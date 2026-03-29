@@ -2,7 +2,11 @@ import { Effect, Option } from "effect"
 import { Command } from "effect/unstable/cli"
 import { IssueSource } from "../../IssueSource.ts"
 import { CurrentIssueSource } from "../../CurrentIssueSource.ts"
-import { getAllProjects } from "../../Projects.ts"
+import {
+  describeProjectGithubParentIssue,
+  describeProjectIssueSelectionMode,
+  getAllProjects,
+} from "../../Projects.ts"
 import { Settings } from "../../Settings.ts"
 
 export const commandProjectsLs = Command.make("ls").pipe(
@@ -33,8 +37,22 @@ export const commandProjectsLs = Command.make("ls").pipe(
           console.log(`  Target Branch: ${project.targetBranch.value}`)
         }
         console.log(
-          `  Git flow: ${project.gitFlow === "pr" ? "Pull Request" : "Commit"}`,
+          `  Git flow: ${
+            project.gitFlow === "pr"
+              ? "Pull Request"
+              : project.gitFlow === "commit"
+                ? "Commit"
+                : "Ralph"
+          }`,
         )
+        const issueSelection = describeProjectIssueSelectionMode(project)
+        if (issueSelection) {
+          console.log(`  Issue selection: ${issueSelection}`)
+        }
+        const parentIssue = describeProjectGithubParentIssue(project)
+        if (parentIssue) {
+          console.log(`  Parent issue: ${parentIssue}`)
+        }
         console.log(
           `  Research agent: ${project.researchAgent ? "Enabled" : "Disabled"}`,
         )

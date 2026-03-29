@@ -16,6 +16,8 @@ import { PlatformServices } from "./shared/platform.ts"
 import { commandProjects } from "./commands/projects.ts"
 import { commandSh } from "./commands/sh.ts"
 import { commandAgents } from "./commands/agents.ts"
+import { Github } from "./Github.ts"
+import { GithubCli } from "./Github/Cli.ts"
 
 commandRoot.pipe(
   Command.withSubcommands([
@@ -29,6 +31,8 @@ commandRoot.pipe(
   ]),
   Command.provide(Settings.layer),
   Command.provide(TracingLayer),
+  Command.provide(Github.layer),
+  Command.provide(GithubCli.layer),
   Command.provide(({ verbose }) => {
     if (!verbose) return Layer.empty
     return Layer.succeed(MinimumLogLevel, "All")

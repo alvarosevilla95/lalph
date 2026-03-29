@@ -1,10 +1,18 @@
 import { Array, Data, Effect, Layer, Option, Path, pipe, String } from "effect"
-import { Project, ProjectId } from "./domain/Project.ts"
+import {
+  deriveGithubParentTargetBranch,
+  getProjectIssueSelectionMode,
+  type IssueSelectionMode,
+  Project,
+  ProjectId,
+} from "./domain/Project.ts"
 import { allProjects, CurrentProjectId, Settings } from "./Settings.ts"
 import { Prompt } from "effect/unstable/cli"
 import { IssueSource } from "./IssueSource.ts"
 import { CurrentIssueSource } from "./CurrentIssueSource.ts"
 import { findProjectRoot } from "./shared/lalphDirectory.ts"
+import { Github } from "./Github.ts"
+import { GithubCli } from "./Github/Cli.ts"
 
 export const layerProjectIdPrompt = Layer.effect(
   CurrentProjectId,
@@ -12,7 +20,12 @@ export const layerProjectIdPrompt = Layer.effect(
     const project = yield* selectProject
     return project.id
   }),
-).pipe(Layer.provide(Settings.layer), Layer.provide(CurrentIssueSource.layer))
+).pipe(
+  Layer.provide(Settings.layer),
+  Layer.provide(CurrentIssueSource.layer),
+  Layer.provide(Github.layer),
+  Layer.provide(GithubCli.layer),
+)
 
 export const getAllProjects = Settings.get(allProjects).pipe(
   Effect.map(Option.getOrElse((): ReadonlyArray<Project> => [])),
@@ -28,6 +41,122 @@ export class ProjectNotFound extends Data.TaggedError("ProjectNotFound")<{
 }> {
   readonly message = `Project "${this.projectId}" not found`
 }
+
+const formatIssueSelectionMode = (issueSelectionMode: IssueSelectionMode) =>
+  issueSelectionMode === "filtered" ? "Filtered" : "GitHub parent"
+
+const formatGithubParentIssue = (issueNumber: number | undefined): string =>
+  issueNumber === undefined ? "Unbound" : `#${issueNumber}`
+
+const parseGithubIssueNumber = (
+  input: string,
+): { readonly _tag: "empty" | "invalid" | "some"; readonly value?: number } => {
+  const trimmed = input.trim()
+  if (trimmed.length === 0) {
+    return { _tag: "empty" }
+  }
+  if (!/^[1-9]\d*$/.test(trimmed)) {
+    return { _tag: "invalid" }
+  }
+  return { _tag: "some", value: Number(trimmed) }
+}
+
+const githubValidationMessage = (cause: unknown, fallback: string): string => {
+  if (
+    typeof cause === "object" &&
+    cause !== null &&
+    "message" in cause &&
+    typeof cause.message === "string" &&
+    cause.message.length > 0
+  ) {
+    return cause.message
+  }
+  return fallback
+}
+
+const validateGithubParentIssueNumber = Effect.fnUntraced(function* (
+  issueNumber: number,
+) {
+  const github = yield* Github
+  const cli = yield* GithubCli
+  const issue = yield* github
+    .request((rest) =>
+      rest.issues.get({
+        owner: cli.owner,
+        repo: cli.repo,
+        issue_number: issueNumber,
+      }),
+    )
+    .pipe(
+      Effect.catchTag("GithubError", ({ cause }) => {
+        const notFound =
+          typeof cause === "object" &&
+          cause !== null &&
+          "status" in cause &&
+          cause.status === 404
+        if (notFound) {
+          return Effect.fail(
+            `GitHub issue #${issueNumber} was not found in ${cli.owner}/${cli.repo}.`,
+          )
+        }
+        return Effect.fail(
+          `Failed to validate GitHub issue #${issueNumber}: ${githubValidationMessage(
+            cause,
+            "unknown GitHub error",
+          )}`,
+        )
+      }),
+    )
+
+  if (issue.data.pull_request !== undefined) {
+    return yield* Effect.fail(
+      `GitHub issue #${issueNumber} is a pull request and cannot be used as a parent issue.`,
+    )
+  }
+})
+
+const promptGithubParentIssueNumber = Effect.fnUntraced(function* (
+  currentIssueNumber: number | undefined,
+) {
+  while (true) {
+    const parentIssueInput = yield* Prompt.text({
+      message: "Parent GitHub issue number (leave empty to clear)",
+      default: currentIssueNumber?.toString() ?? "",
+      validate(input) {
+        const parsed = parseGithubIssueNumber(input)
+        if (parsed._tag !== "invalid") {
+          return Effect.succeed(input)
+        }
+        return Effect.fail("Parent issue number must be a positive integer.")
+      },
+    })
+    const parsed = parseGithubIssueNumber(parentIssueInput)
+    if (parsed._tag === "empty") {
+      return undefined
+    }
+    if (parsed._tag === "invalid") {
+      continue
+    }
+
+    const issueNumber = parsed.value!
+    const validationError = yield* validateGithubParentIssueNumber(
+      issueNumber,
+    ).pipe(
+      Effect.match({
+        onFailure: (message) => Option.some(message),
+        onSuccess: () => Option.none<string>(),
+      }),
+    )
+
+    if (Option.isNone(validationError)) {
+      return issueNumber
+    }
+
+    console.log("")
+    console.log(validationError.value)
+    console.log("")
+  }
+})
 
 // Prompts
 
@@ -69,6 +198,7 @@ export const addOrUpdateProject = Effect.fnUntraced(function* (
   fromPlanMode = false,
 ) {
   const pathService = yield* Path.Path
+  const currentIssueSource = yield* CurrentIssueSource
   const projects = yield* getAllProjects
   const id = existing
     ? existing.id
@@ -140,6 +270,88 @@ export const addOrUpdateProject = Effect.fnUntraced(function* (
     )
   }
 
+  let issueSelectionMode: IssueSelectionMode | undefined = undefined
+  if (gitFlow === "pr") {
+    if (currentIssueSource.id === "github") {
+      issueSelectionMode = yield* Prompt.select({
+        message: "Issue selection mode",
+        choices: [
+          {
+            title: "Filtered",
+            description: "Use the current GitHub project and label filters",
+            value: "filtered",
+            selected:
+              (existing
+                ? getProjectIssueSelectionMode(existing)
+                : "filtered") === "filtered",
+          },
+          {
+            title: "GitHub parent",
+            description: "Use the direct child issues of one parent issue",
+            value: "github-parent",
+            selected:
+              (existing
+                ? getProjectIssueSelectionMode(existing)
+                : "filtered") === "github-parent",
+          },
+        ] as const,
+      })
+    } else {
+      issueSelectionMode = "filtered"
+    }
+  }
+
+  let githubParentIssueNumber = existing?.githubParentIssueNumber
+  if (gitFlow === "pr" && issueSelectionMode === "github-parent") {
+    console.log("")
+    console.log(
+      "GitHub parent mode selects work from the direct child issues of one parent issue.",
+    )
+    console.log(
+      "Leave the parent issue empty to keep the project unbound until plan mode creates one.",
+    )
+    console.log(
+      "Warning: rebinding the parent issue changes future workset membership.",
+    )
+    console.log("")
+
+    githubParentIssueNumber = yield* promptGithubParentIssueNumber(
+      existing?.githubParentIssueNumber,
+    )
+
+    if (
+      existing?.githubParentIssueNumber !== undefined &&
+      existing.githubParentIssueNumber !== githubParentIssueNumber
+    ) {
+      console.log("")
+      console.log(
+        githubParentIssueNumber === undefined
+          ? "Cleared the parent issue binding. Future runs stay unbound until you attach a new parent issue."
+          : `Rebound the parent issue from #${existing.githubParentIssueNumber} to #${githubParentIssueNumber}. Future workset membership will follow the new parent.`,
+      )
+      console.log("")
+    }
+  }
+
+  const resolvedTargetBranch =
+    gitFlow === "pr" &&
+    issueSelectionMode === "github-parent" &&
+    githubParentIssueNumber !== undefined &&
+    Option.isNone(targetBranch)
+      ? Option.some(deriveGithubParentTargetBranch(githubParentIssueNumber))
+      : targetBranch
+
+  if (
+    gitFlow === "pr" &&
+    issueSelectionMode === "github-parent" &&
+    githubParentIssueNumber !== undefined &&
+    Option.isNone(targetBranch)
+  ) {
+    console.log(
+      `Derived target branch: ${deriveGithubParentTargetBranch(githubParentIssueNumber)}`,
+    )
+  }
+
   const researchAgent = yield* Prompt.toggle({
     message: "Enable research agent?",
     initial: existing ? existing.researchAgent : false,
@@ -153,8 +365,11 @@ export const addOrUpdateProject = Effect.fnUntraced(function* (
     id: ProjectId.makeUnsafe(id),
     enabled: existing ? existing.enabled : true,
     concurrency,
-    targetBranch,
+    targetBranch: resolvedTargetBranch,
     gitFlow,
+    issueSelectionMode,
+    githubParentIssueNumber,
+    specPath: existing?.specPath,
     ralphSpec: Option.getOrUndefined(ralphSpec),
     researchAgent,
     reviewAgent,
@@ -176,3 +391,18 @@ export const addOrUpdateProject = Effect.fnUntraced(function* (
 
   return project
 })
+
+export const describeProjectIssueSelectionMode = (
+  project: Project,
+): string | undefined =>
+  project.gitFlow === "pr"
+    ? formatIssueSelectionMode(getProjectIssueSelectionMode(project))
+    : undefined
+
+export const describeProjectGithubParentIssue = (
+  project: Project,
+): string | undefined =>
+  project.gitFlow === "pr" &&
+  getProjectIssueSelectionMode(project) === "github-parent"
+    ? formatGithubParentIssue(project.githubParentIssueNumber)
+    : undefined

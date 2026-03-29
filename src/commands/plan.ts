@@ -25,6 +25,8 @@ import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process"
 import { parseBranch } from "../shared/git.ts"
 import type { CliAgentPreset } from "../domain/CliAgentPreset.ts"
 import { ClankaMuxerLayer } from "../Clanka.ts"
+import { Github } from "../Github.ts"
+import { GithubCli } from "../Github/Cli.ts"
 
 const dangerous = Flag.boolean("dangerous").pipe(
   Flag.withAlias("d"),
@@ -97,6 +99,8 @@ export const commandPlan = Command.make("plan", {
           }).pipe(Effect.provideService(CurrentProjectId, project.id))
         }).pipe(
           Effect.provide([
+            Github.layer,
+            GithubCli.layer,
             Settings.layer,
             CurrentIssueSource.layer,
             ClankaMuxerLayer,

@@ -239,24 +239,25 @@ Notes:
 
 ## Implementation Plan
 
-1. Extend project schema, prompting, validation, and listing:
+1. [x] Extend project schema, prompting, validation, and listing:
    - add `issueSelectionMode`, `githubParentIssueNumber`, and `specPath`,
    - conditionally prompt for issue-selection only in PR flow,
    - validate GitHub parent issue numbers,
    - improve `projects ls` output for the new mode,
-   - add runtime guards for missing parent issues.
+   - add runtime guards so configured `github-parent` projects do not silently
+     fall back to filtered discovery.
 
-2. Add GitHub parent-child issue discovery:
+2. [ ] Add GitHub parent-child issue discovery:
    - implement a GitHub adapter branch for `filtered` vs `github-parent`,
    - fetch direct child issues of the bound parent and map them to `PrdIssue`,
    - keep `autoMergeLabel` support active in this mode,
    - hide inactive GitHub filter output when parent mode is active.
 
-3. Update `lalph issue` for bound-parent child creation:
+3. [ ] Update `lalph issue` for bound-parent child creation:
    - auto-link created issues as children of the bound parent,
    - fail loudly if linking does not succeed.
 
-4. Add `lalph plan` support for creating parent-bound projects:
+4. [ ] Add `lalph plan` support for creating parent-bound projects:
    - create parent issue,
    - derive/set parent branch,
    - commit/push spec to the parent branch,
@@ -264,9 +265,17 @@ Notes:
    - bind the project and persist `specPath`,
    - reject reruns for already-bound projects.
 
-5. Add prompt guidance for parent-bound task execution:
+5. [ ] Add prompt guidance for parent-bound task execution:
    - always instruct the agent to review the project spec when `specPath`
      exists.
+
+## Implementation Notes
+
+- This change set intentionally covers project configuration and validation
+  only. The runner now fails fast for `github-parent` projects instead of
+  silently using the existing filtered GitHub discovery path.
+- GitHub project and label filter prompts/output are now hidden in
+  `github-parent` mode, while `autoMergeLabel` remains configurable.
 
 ## Deferred for V2
 

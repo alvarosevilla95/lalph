@@ -20,7 +20,13 @@ import {
 import { Octokit } from "octokit"
 import { IssueSource, IssueSourceError } from "./IssueSource.ts"
 import { PrdIssue } from "./domain/PrdIssue.ts"
-import { CurrentProjectId, ProjectSetting, Settings } from "./Settings.ts"
+import { getProjectIssueSelectionMode, type Project } from "./domain/Project.ts"
+import {
+  allProjects,
+  CurrentProjectId,
+  ProjectSetting,
+  Settings,
+} from "./Settings.ts"
 import { Prompt } from "effect/unstable/cli"
 import { TokenManager } from "./Github/TokenManager.ts"
 import { GithubCli } from "./Github/Cli.ts"
@@ -195,13 +201,60 @@ export const GithubIssueSource = Layer.effect(
   Effect.gen(function* () {
     const github = yield* Github
     const cli = yield* GithubCli
+
+    const getProjectConfiguration = Effect.fnUntraced(function* (
+      projectId: ProjectId,
+    ) {
+      const projects = yield* Settings.get(allProjects)
+      const project = pipe(
+        projects,
+        Option.getOrElse((): ReadonlyArray<Project> => []),
+        Array.findFirst((entry) => entry.id === projectId),
+      )
+
+      if (Option.isNone(project)) {
+        return {
+          issueSelectionMode: "filtered" as const,
+          githubParentIssueNumber: Option.none<number>(),
+        }
+      }
+
+      return {
+        issueSelectionMode:
+          project.value.gitFlow === "pr"
+            ? getProjectIssueSelectionMode(project.value)
+            : ("filtered" as const),
+        githubParentIssueNumber: Option.fromUndefinedOr(
+          project.value.githubParentIssueNumber,
+        ),
+      }
+    })
+
     const projectSettings = yield* Cache.make({
       lookup: Effect.fnUntraced(
-        function* (_projectId: ProjectId) {
+        function* (projectId: ProjectId) {
+          const { issueSelectionMode, githubParentIssueNumber } =
+            yield* getProjectConfiguration(projectId)
+          const autoMergeLabelName = yield* getOrSelectAutoMergeLabel
+          if (issueSelectionMode === "github-parent") {
+            return {
+              issueSelectionMode,
+              githubParentIssueNumber,
+              labelFilter: Option.none<string>(),
+              projectFilter: Option.none<GithubProject>(),
+              autoMergeLabelName,
+            } as const
+          }
+
           const labelFilter = yield* getOrSelectLabel
           const projectFilter = yield* getOrSelectProjectFilter
-          const autoMergeLabelName = yield* getOrSelectAutoMergeLabel
-          return { labelFilter, projectFilter, autoMergeLabelName } as const
+          return {
+            issueSelectionMode,
+            githubParentIssueNumber,
+            labelFilter,
+            projectFilter,
+            autoMergeLabelName,
+          } as const
         },
         Effect.orDie,
         (effect, projectId) =>
@@ -686,20 +739,37 @@ export const GithubIssueSource = Layer.effect(
       settings: (projectId) =>
         Effect.asVoid(Cache.get(projectSettings, projectId)),
       info: Effect.fnUntraced(function* (projectId) {
-        const { labelFilter, projectFilter, autoMergeLabelName } =
-          yield* Cache.get(projectSettings, projectId)
+        const {
+          issueSelectionMode,
+          githubParentIssueNumber,
+          labelFilter,
+          projectFilter,
+          autoMergeLabelName,
+        } = yield* Cache.get(projectSettings, projectId)
         console.log(
-          `  GitHub project: ${Option.match(projectFilter, {
-            onNone: () => "None",
-            onSome: (value) => `#${value.number} ${value.title}`,
-          })}`,
+          `  Issue selection: ${issueSelectionMode === "filtered" ? "Filtered" : "GitHub parent"}`,
         )
-        console.log(
-          `  Label filter: ${Option.match(labelFilter, {
-            onNone: () => "None",
-            onSome: (value) => value,
-          })}`,
-        )
+        if (issueSelectionMode === "github-parent") {
+          console.log(
+            `  Parent issue: ${Option.match(githubParentIssueNumber, {
+              onNone: () => "Unbound",
+              onSome: (value) => `#${value}`,
+            })}`,
+          )
+        } else {
+          console.log(
+            `  GitHub project: ${Option.match(projectFilter, {
+              onNone: () => "None",
+              onSome: (value) => `#${value.number} ${value.title}`,
+            })}`,
+          )
+          console.log(
+            `  Label filter: ${Option.match(labelFilter, {
+              onNone: () => "None",
+              onSome: (value) => value,
+            })}`,
+          )
+        }
         console.log(
           `  Auto-merge label: ${Option.match(autoMergeLabelName, {
             onNone: () => "Disabled",
