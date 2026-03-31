@@ -150,6 +150,11 @@ export class CurrentIssueSource extends ServiceMap.Service<
             Effect.flatMap((source) => source.cancelIssue(projectId, issueId)),
             unlessRalph(projectId, Effect.void),
           ),
+        syncPullRequestMetadata: (options) =>
+          ScopedRef.get(ref).pipe(
+            Effect.flatMap((source) => source.syncPullRequestMetadata(options)),
+            unlessRalph(options.projectId, Effect.void),
+          ),
         reset: ScopedRef.get(ref).pipe(
           Effect.flatMap((source) => source.reset),
         ),

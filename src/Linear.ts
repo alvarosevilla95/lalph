@@ -488,6 +488,7 @@ export const LinearIssueSource = Layer.effect(
         },
         Effect.mapError((cause) => new IssueSourceError({ cause })),
       ),
+      syncPullRequestMetadata: () => Effect.void,
       reset: Effect.gen(function* () {
         const projectId = yield* CurrentProjectId
         yield* Settings.setProject(selectedProjectId, Option.none())
