@@ -17,6 +17,11 @@ export class CliAgent<const Id extends string> extends Data.Class<{
     readonly prdFilePath: string | undefined
     readonly extraArgs: ReadonlyArray<string>
   }) => ChildProcess.Command
+  commandIssue?: (options: {
+    readonly prompt: string
+    readonly prdFilePath: string | undefined
+    readonly extraArgs: ReadonlyArray<string>
+  }) => ChildProcess.Command
   commandPlan: (options: {
     readonly prompt: string
     readonly prdFilePath: string | undefined
@@ -81,6 +86,28 @@ const opencode = new CliAgent({
         stdin: "inherit",
       },
     ),
+  commandIssue: ({ prompt, prdFilePath, extraArgs }) =>
+    ChildProcess.make(
+      "opencode",
+      [
+        "--prompt",
+        prdFilePath
+          ? `@${prdFilePath}
+
+${prompt}`
+          : prompt,
+        ...extraArgs,
+      ],
+      {
+        extendEnv: true,
+        env: {
+          OPENCODE_PERMISSION: '{"*":"allow", "question":"allow"}',
+        },
+        stdout: "inherit",
+        stderr: "inherit",
+        stdin: "inherit",
+      },
+    ),
   commandPlan: ({ prompt, prdFilePath, dangerous }) =>
     ChildProcess.make(
       "opencode",
@@ -136,6 +163,25 @@ ${prompt}`
       },
     ),
   outputTransformer: claudeOutputTransformer,
+  commandIssue: ({ prompt, prdFilePath, extraArgs }) =>
+    ChildProcess.make(
+      "claude",
+      [
+        "--dangerously-skip-permissions",
+        ...extraArgs,
+        "--",
+        prdFilePath
+          ? `@${prdFilePath}
+
+${prompt}`
+          : prompt,
+      ],
+      {
+        stdout: "inherit",
+        stderr: "inherit",
+        stdin: "inherit",
+      },
+    ),
   commandPlan: ({ prompt, prdFilePath, dangerous }) =>
     ChildProcess.make(
       "claude",
@@ -176,6 +222,24 @@ ${prompt}`
         stdin: "inherit",
         env: { FORCE_COLOR: "1" },
         extendEnv: true,
+      },
+    ),
+  commandIssue: ({ prompt, prdFilePath, extraArgs }) =>
+    ChildProcess.make(
+      "codex",
+      [
+        "--dangerously-bypass-approvals-and-sandbox",
+        ...extraArgs,
+        prdFilePath
+          ? `@${prdFilePath}
+
+${prompt}`
+          : prompt,
+      ],
+      {
+        stdout: "inherit",
+        stderr: "inherit",
+        stdin: "inherit",
       },
     ),
   commandPlan: ({ prompt, prdFilePath, dangerous }) =>

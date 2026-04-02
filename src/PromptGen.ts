@@ -2,6 +2,10 @@ import { Effect, Layer, ServiceMap } from "effect"
 import { PrdIssue } from "./domain/PrdIssue.ts"
 import { CurrentIssueSource } from "./CurrentIssueSource.ts"
 import type { GitFlow } from "./GitFlow.ts"
+import {
+  interactiveIssueDraftRelativePath,
+  issueTemplate,
+} from "./IssueDraft.ts"
 
 export class PromptGen extends ServiceMap.Service<PromptGen>()(
   "lalph/PromptGen",
@@ -470,6 +474,60 @@ Make sure to setup dependencies between the tasks using the \`blockedBy\` field.
 
 **Important:** You are only creating or updating a plan, not implementing any tasks yet.`
 
+      const promptIssueInterview = (options: {
+        readonly projectId: string
+        readonly issueSourceName: string
+        readonly request: string
+        readonly draftPath: string
+      }) => `You are helping draft a new issue for the active project.
+
+Project context:
+- Project id: ${options.projectId}
+- Issue source: ${options.issueSourceName}
+
+High-level request:
+<request>
+${options.request}
+</request>
+
+Your job is to run an interactive terminal interview with the user until you have
+enough information to produce a complete issue draft.
+
+Instructions:
+1. Ask clarifying questions directly in the terminal whenever requirements are missing or ambiguous.
+2. Do not stop after one question if important details are still unclear.
+3. Once you have enough detail, write the final issue draft to \`${options.draftPath}\`.
+4. The file must use this exact structure:
+
+\`\`\`md
+${issueTemplate.trimEnd()}
+Issue description goes here.
+\`\`\`
+
+5. The front matter must satisfy these requirements:
+
+\`\`\`json
+${JSON.stringify(
+  {
+    title: "string",
+    priority: "number",
+    estimate: "number | null",
+    blockedBy: ["string"],
+    autoMerge: "boolean",
+  },
+  null,
+  2,
+)}
+\`\`\`
+
+6. Keep the description in markdown below the front matter. Use an empty description if none was provided.
+7. Overwrite the draft file with the final result and then tell the user that the draft was written.
+
+Important:
+- Do not create the issue yourself.
+- Do not write anywhere except \`${interactiveIssueDraftRelativePath}\`.
+- The user will review the draft in their editor after your interview.`
+
       return {
         promptChoose,
         promptChooseClanka,
@@ -485,6 +543,7 @@ Make sure to setup dependencies between the tasks using the \`blockedBy\` field.
         planPrompt,
         promptPlanTasks,
         promptPlanTasksClanka,
+        promptIssueInterview,
         systemClanka,
       } as const
     }),

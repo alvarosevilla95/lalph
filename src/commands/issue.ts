@@ -1,103 +1,136 @@
-import { Command } from "effect/unstable/cli"
+import { Command, Flag, Prompt } from "effect/unstable/cli"
 import { CurrentIssueSource } from "../CurrentIssueSource.ts"
-import { Effect, Exit, flow, Option, pipe, Schema } from "effect"
-import { IssueSource } from "../IssueSource.ts"
-import { PrdIssue } from "../domain/PrdIssue.ts"
-import * as Yaml from "yaml"
-import { CurrentProjectId } from "../Settings.ts"
-import { layerProjectIdPrompt } from "../Projects.ts"
+import { Effect, Option } from "effect"
+import { CurrentProjectId, Settings } from "../Settings.ts"
+import { layerProjectIdPrompt, selectProject } from "../Projects.ts"
 import { Editor } from "../Editor.ts"
+import {
+  createIssueFromDraft,
+  issueTemplate,
+  issueTitlePlaceholder,
+  parseIssueDraft,
+  prepareInteractiveIssueDraftSession,
+  recoverIssueDraftOnFailure,
+  reviewIssueDraft,
+  reviewIssueDraftFileUntilValid,
+} from "../IssueDraft.ts"
+import { selectCliAgentPreset } from "../Presets.ts"
+import { agentIssueInterviewer } from "../Agents/issueInterviewer.ts"
+import { PromptGen } from "../PromptGen.ts"
 
-const issueTemplate = `---
-title: Issue Title
-priority: 3
-estimate: null
-blockedBy: []
-autoMerge: false
----
-
-`
-
-const FrontMatterSchema = Schema.toCodecJson(
-  Schema.Struct({
-    title: Schema.String,
-    priority: Schema.Finite,
-    estimate: Schema.NullOr(Schema.Finite),
-    blockedBy: Schema.Array(Schema.String),
-    autoMerge: Schema.Boolean,
-  }),
-)
-
-const handler = flow(
-  Command.withHandler(
-    Effect.fnUntraced(function* () {
-      const editor = yield* Editor
-
-      const content = yield* editor.editTemp({
-        suffix: ".md",
-        initialContent: issueTemplate,
-      })
-      if (Option.isNone(content)) {
-        return
-      }
-      const contentValue = content.value.trim()
-
-      yield* Effect.addFinalizer((exit) => {
-        if (Exit.isSuccess(exit)) return Effect.void
-        return pipe(
-          editor.saveTemp(contentValue, { suffix: ".md" }),
-          Effect.flatMap((file) => Effect.log(`Saved your issue to: ${file}`)),
-          Effect.ignore,
-        )
-      })
-
-      const lines = contentValue.split("\n")
-      const yamlLines: string[] = []
-      let descriptionStartIndex = 0
-      for (let i = 0; i < lines.length; i++) {
-        const line = lines[i]!
-        if (line.trim() === "---") {
-          if (yamlLines.length === 0) {
-            // starting delimiter
-            continue
-          } else {
-            // ending delimiter
-            descriptionStartIndex = i + 1
-            break
-          }
-        }
-        yamlLines.push(line)
-      }
-      const yamlContent = yamlLines.join("\n")
-      const frontMatter = yield* Schema.decodeEffect(FrontMatterSchema)(
-        Yaml.parse(yamlContent),
-      )
-      const description = lines.slice(descriptionStartIndex).join("\n").trim()
-
-      if (frontMatter.title.trim() === "Issue Title") return
-
-      yield* Effect.gen(function* () {
-        const source = yield* IssueSource
-        const projectId = yield* CurrentProjectId
-        const created = yield* source.createIssue(
-          projectId,
-          new PrdIssue({
-            id: null,
-            ...frontMatter,
-            description,
-            state: "todo",
-          }),
-        )
-        console.log(`Created issue with ID: ${created.id}`)
-        console.log(`URL: ${created.url}`)
-      }).pipe(Effect.provide([layerProjectIdPrompt, CurrentIssueSource.layer]))
-    }, Effect.scoped),
+const interactive = Flag.boolean("interactive").pipe(
+  Flag.withAlias("i"),
+  Flag.withDescription(
+    "Interview with a supported CLI agent to build .lalph/issue-draft.md, then require editor review before creating the issue.",
   ),
-  Command.provide(Editor.layer),
 )
 
-export const commandIssue = Command.make("issue").pipe(
-  Command.withDescription("Create a new issue in your editor."),
+const printCreatedIssue = (created: {
+  readonly id: string
+  readonly url: string
+}) =>
+  Effect.sync(() => {
+    console.log(`Created issue with ID: ${created.id}`)
+    console.log(`URL: ${created.url}`)
+  })
+
+const runStandardIssue = Effect.fnUntraced(function* () {
+  const content = yield* reviewIssueDraft({
+    initialContent: issueTemplate,
+  })
+  if (Option.isNone(content)) {
+    return
+  }
+
+  yield* recoverIssueDraftOnFailure(content.value)
+  const projectId = yield* CurrentProjectId
+  const parsed = yield* parseIssueDraft(content.value)
+
+  if (parsed.frontMatter.title.trim() === issueTitlePlaceholder) {
+    return
+  }
+
+  const created = yield* createIssueFromDraft({
+    projectId,
+    content: content.value,
+  })
+
+  yield* printCreatedIssue(created.created)
+})
+
+const runInteractiveIssue = Effect.fnUntraced(function* () {
+  const project = yield* selectProject
+  const sourceMeta = yield* CurrentIssueSource
+  const request = yield* Prompt.text({
+    message: "What issue do you want to create?",
+    validate: (input) =>
+      input.trim().length === 0
+        ? Effect.fail("The issue request cannot be empty")
+        : Effect.succeed(input),
+  })
+  const preset = yield* selectCliAgentPreset
+  const draftSession = yield* prepareInteractiveIssueDraftSession()
+
+  yield* agentIssueInterviewer({
+    cwd: draftSession.root,
+    projectId: project.id,
+    issueSourceName: sourceMeta.name,
+    request,
+    draftPath: draftSession.draftPath,
+    preset,
+  })
+
+  yield* draftSession.ensureDraftExists
+  const reviewed = yield* reviewIssueDraftFileUntilValid(
+    draftSession.draftPath,
+    {
+      validate: ({ frontMatter }) =>
+        frontMatter.title.trim() === issueTitlePlaceholder
+          ? "Issue draft title is still the placeholder value. Update the title before creating the issue."
+          : undefined,
+    },
+  )
+  if (Option.isNone(reviewed)) {
+    yield* Effect.log(
+      `Interactive issue draft preserved at: ${draftSession.draftPath}`,
+    )
+    return
+  }
+
+  const created = yield* createIssueFromDraft({
+    projectId: project.id,
+    content: reviewed.value.content,
+  })
+
+  yield* draftSession.deleteDraft
+  yield* printCreatedIssue(created.created)
+})
+
+export const commandIssue = Command.make("issue", {
+  interactive,
+}).pipe(
+  Command.withDescription(
+    "Create a new issue either from your editor template or, with --interactive, by interviewing with a supported CLI agent and then reviewing the generated draft.",
+  ),
   Command.withAlias("i"),
-  handler,
+  Command.withHandler(
+    Effect.fnUntraced(
+      function* ({ interactive }) {
+        if (interactive) {
+          return yield* runInteractiveIssue()
+        }
+
+        return yield* runStandardIssue().pipe(
+          Effect.provide([layerProjectIdPrompt, CurrentIssueSource.layer]),
+        )
+      },
+      Effect.scoped,
+      Effect.provide([
+        Editor.layer,
+        Settings.layer,
+        CurrentIssueSource.layer,
+        PromptGen.layer,
+      ]),
+    ),
+  ),
 )
